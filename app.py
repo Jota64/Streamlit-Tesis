@@ -188,12 +188,37 @@ try:
         df_exitosos = df_p_filt[df_p_filt["alcanzable"] == True].copy()
         df_exitosos["timestamp"] = pd.to_datetime(df_exitosos["timestamp"])
 
+        # -----------------------------------------------------------------
+        # 🚨 DEPURACIÓN Y ORDENAMIENTO ESTRICTO
+        # -----------------------------------------------------------------
+        # 1. Si hay múltiples mediciones en el mismo instante para la misma sonda, promediar el RTT
+        df_exitosos = (
+            df_exitosos.groupby(
+                [
+                    "timestamp",
+                    "sonda_nombre",
+                    "hora_corta",
+                    "asn",
+                    "ubicacion",
+                ],
+                as_index=False,
+            )
+            .agg({"rtt_avg_ms": "mean"})
+            .reset_index(drop=True)
+        )
+
+        # 2. Ordenar cronológicamente de forma estricta
+        df_exitosos = df_exitosos.sort_values(
+            by=["sonda_nombre", "timestamp"]
+        ).reset_index(drop=True)
+
         if not df_exitosos.empty:
             fig_line = px.line(
                 df_exitosos,
                 x="timestamp",
                 y="rtt_avg_ms",
                 color="sonda_nombre",
+                line_group="sonda_nombre",  # Fuerza la agrupación unívoca de la línea
                 markers=True,
                 hover_data=["hora_corta", "asn", "ubicacion"],
                 labels={
@@ -205,7 +230,7 @@ try:
             )
 
             fig_line.update_traces(
-                line=dict(width=2.5), marker=dict(size=6)
+                line=dict(width=2.5), marker=dict(size=6), connectgaps=False
             )
 
             # ANOTACIÓN DE EVENTOS EN EL TIEMPO CONVERTIENDO A MILISEGUNDOS
@@ -232,7 +257,6 @@ try:
                 annotation_font_color="green",
             )
 
-            # Botones de navegación temporal rápida
             fig_line.update_xaxes(
                 rangeselector=dict(
                     buttons=list(
