@@ -452,10 +452,10 @@ try:
         )
         st.plotly_chart(fig_hops, use_container_width=True)
 
-    # --- SECCIÓN TRACEROUTES 2: INSPECCIÓN SALTO POR SALTO (NUEVO) ---
+# --- SECCIÓN TRACEROUTES 2: INSPECCIÓN SALTO POR SALTO ---
     st.subheader(f"🔎 Inspección de Ruta Salto por Salto hacia {sitio_sel}")
     st.caption(
-        "Desglose secuencial de la ruta IP tomada por una sonda específica."
+        "Desglose secuencial de la ruta IP tomada por una sonda específica y la latencia (RTT) acumulada en cada salto."
     )
 
     sonda_inspeccion = st.selectbox(
@@ -465,26 +465,53 @@ try:
     df_saltos_filt = df_saltos[
         (df_saltos["sitio_web"] == sitio_sel)
         & (df_saltos["sonda_nombre"] == sonda_inspeccion)
-    ]
+    ].copy()
 
-    if not df_saltos_filt.empty:
-        # Incluimos pais, ciudad y proveedor_salto en la agrupación
+    # -----------------------------------------------------------------
+    # 🚨 FILTROS CLAVE PARA EVITAR CORRUPCIÓN DEL EJE X Y LÍNEAS ZIG-ZAG
+    # -----------------------------------------------------------------
+    # Convertir a numérico por seguridad y eliminar saltos anómalos/imposibles
+    df_saltos_filt["hop_num"] = pd.to_numeric(
+        df_saltos_filt["hop_num"], errors="coerce"
+    )
+
+    df_saltos_validos = df_saltos_filt[
+        (df_saltos_filt["hop_num"].notnull())
+        & (df_saltos_filt["hop_num"] > 0)
+        & (df_saltos_filt["hop_num"] <= 30)  # Limita a un rango RFC real de traceroute
+        & (df_saltos_filt["rtt_hop_ms"].notnull())
+        & (df_saltos_filt["rtt_hop_ms"] >= 0)
+    ].copy()
+
+    if not df_saltos_validos.empty:
+        # Agrupar ordenadamente por número de salto
         df_hop_profile = (
-            df_saltos_filt.groupby(["hop_num", "pais", "ciudad", "proveedor_salto"])
+            df_saltos_validos.groupby("hop_num", as_index=False)
             .agg(
                 ip_intermedia=(
                     "ip_intermedia",
                     lambda x: x.mode()[0] if not x.empty else "*",
                 ),
+                pais=("pais", lambda x: x.mode()[0] if not x.empty else "N/A"),
+                ciudad=(
+                    "ciudad",
+                    lambda x: x.mode()[0] if not x.empty else "N/A",
+                ),
+                proveedor_salto=(
+                    "proveedor_salto",
+                    lambda x: x.mode()[0] if not x.empty else "N/A",
+                ),
                 rtt_promedio_ms=("rtt_hop_ms", "mean"),
             )
-            .reset_index()
+            .sort_values(by="hop_num")
+            .reset_index(drop=True)
         )
+
         df_hop_profile["rtt_promedio_ms"] = df_hop_profile[
             "rtt_promedio_ms"
         ].round(2)
 
-        # Gráfica de línea del perfil de latencia por salto
+        # Gráfica de línea limpia
         fig_path = px.line(
             df_hop_profile,
             x="hop_num",
@@ -492,23 +519,34 @@ try:
             markers=True,
             hover_data=["pais", "ciudad", "proveedor_salto"],
             text="ip_intermedia",
-            title=f"Perfil de Latencia Salto a Salto (Ruta de {sonda_inspeccion})",
+            title=f"Perfil de Latencia Salto a Salto — {sonda_inspeccion}",
             labels={
                 "hop_num": "Número de Salto (Hop)",
                 "rtt_promedio_ms": "Latencia Acumulada (ms)",
             },
             height=500,
         )
+
         fig_path.update_traces(
             textposition="top center",
             line=dict(width=2.5),
-            marker=dict(size=7),
-            textfont_size=12,
+            marker=dict(size=8),
+            textfont_size=11,
+            connectgaps=False,  # Deja huecos en saltos que no respondieron (*)
         )
+
+        # Ajustar el eje X para que muestre saltos enteros (1, 2, 3...)
+        max_hop = int(df_hop_profile["hop_num"].max())
+        fig_path.update_xaxes(
+            dtick=1, range=[0, max_hop + 1], title="Número de Salto (Hop)"
+        )
+
+        fig_path.update_yaxes(title="RTT Acumulado (ms)")
         fig_path.update_layout(font=dict(size=13))
+
         st.plotly_chart(fig_path, use_container_width=True)
 
-        # AQUÍ VERÁS EL CAMBIO: TABLA CON PAÍS, CIUDAD Y PROVEEDOR
+        # Tabla de detalle
         st.dataframe(
             df_hop_profile[
                 [
@@ -532,6 +570,8 @@ try:
             use_container_width=True,
             hide_index=True,
         )
+    else:
+        st.info("No hay trazas de saltos válidas registradas para esta sonda.")
 
 except FileNotFoundError:
     st.error(
