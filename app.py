@@ -573,6 +573,98 @@ try:
     else:
         st.info("No hay trazas de saltos válidas registradas para esta sonda.")
 
+# --- SECCIÓN TRACEROUTES 3: COMPARATIVO MULTI-SONDA SALTO POR SALTO ---
+    st.subheader(
+        f"📊 Comparativa de Rutas Salto a Salto entre Sondas hacia {sitio_sel}"
+    )
+    st.caption(
+        "Superpone la progresión de latencia acumulada (ms) de todas las sondas"
+        " seleccionadas para identificar en qué salto/tramo se generan las"
+        " divergencias de latencia."
+    )
+
+    # Filtrar datos de traceroute para TODAS las sondas seleccionadas en la barra lateral
+    df_saltos_comp = df_saltos[
+        (df_saltos["sitio_web"] == sitio_sel)
+        & (df_saltos["sonda_nombre"].isin(sondas_sel))
+    ].copy()
+
+    # Sanitización de datos
+    df_saltos_comp["hop_num"] = pd.to_numeric(
+        df_saltos_comp["hop_num"], errors="coerce"
+    )
+
+    df_saltos_comp_validos = df_saltos_comp[
+        (df_saltos_comp["hop_num"].notnull())
+        & (df_saltos_comp["hop_num"] > 0)
+        & (df_saltos_comp["hop_num"] <= 30)
+        & (df_saltos_comp["rtt_hop_ms"].notnull())
+        & (df_saltos_comp["rtt_hop_ms"] >= 0)
+    ].copy()
+
+    if not df_saltos_comp_validos.empty:
+        # Agrupar por Número de Salto Y Nombre de Sonda
+        df_comp_profile = (
+            df_saltos_comp_validos.groupby(
+                ["hop_num", "sonda_nombre"], as_index=False
+            )
+            .agg(rtt_promedio_ms=("rtt_hop_ms", "mean"))
+            .sort_values(by=["sonda_nombre", "hop_num"])
+            .reset_index(drop=True)
+        )
+
+        df_comp_profile["rtt_promedio_ms"] = df_comp_profile[
+            "rtt_promedio_ms"
+        ].round(2)
+
+        # Gráfica multilínea
+        fig_comp = px.line(
+            df_comp_profile,
+            x="hop_num",
+            y="rtt_promedio_ms",
+            color="sonda_nombre",  # Separa las líneas por color para cada sonda
+            line_group="sonda_nombre",
+            markers=True,
+            title=f"Comparativa de Perfil de Latencia Salto por Salto — {sitio_sel}",
+            labels={
+                "hop_num": "Número de Salto (Hop #)",
+                "rtt_promedio_ms": "Latencia Acumulada (ms)",
+                "sonda_nombre": "Sonda / Proveedor",
+            },
+            height=550,
+        )
+
+        fig_comp.update_traces(
+            line=dict(width=2.5), marker=dict(size=7), connectgaps=False
+        )
+
+        max_hop_comp = int(df_comp_profile["hop_num"].max())
+        fig_comp.update_xaxes(
+            dtick=1, range=[0, max_hop_comp + 1], title="Número de Salto (Hop)"
+        )
+        fig_comp.update_yaxes(title="RTT Acumulado (ms)")
+
+        fig_comp.update_layout(
+            font=dict(size=13),
+            hovermode="x unified",  # Muestra la latencia de todas las sondas al pasar el mouse por un salto
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+            ),
+        )
+
+        st.plotly_chart(fig_comp, use_container_width=True)
+    else:
+        st.info(
+            "No hay datos de saltos suficientes para comparar las sondas"
+            " seleccionadas."
+        )
+
+
+
 except FileNotFoundError:
     st.error(
         "Ejecuta `procesar_datos.py` para sincronizar los timestamps con UTC-4 y generar la estructura de saltos."
