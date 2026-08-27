@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
@@ -179,7 +180,7 @@ try:
 
     st.markdown("---")
 
-    # --- GRÁFICO 1: SERIES TEMPORALES DE LATENCIA + EVENTOS HISTÓRICOS ---
+    # --- GRÁFICO 1: SERIES TEMPORALES DE LATENCIA ---
     st.subheader(
         f"📈 Series de Tiempo de Latencia (Hora Local VLA UTC-4) hacia {sitio_sel}"
     )
@@ -188,10 +189,6 @@ try:
         df_exitosos = df_p_filt[df_p_filt["alcanzable"] == True].copy()
         df_exitosos["timestamp"] = pd.to_datetime(df_exitosos["timestamp"])
 
-        # -----------------------------------------------------------------
-        # 🚨 DEPURACIÓN Y ORDENAMIENTO ESTRICTO
-        # -----------------------------------------------------------------
-        # 1. Si hay múltiples mediciones en el mismo instante para la misma sonda, promediar el RTT
         df_exitosos = (
             df_exitosos.groupby(
                 [
@@ -207,7 +204,6 @@ try:
             .reset_index(drop=True)
         )
 
-        # 2. Ordenar cronológicamente de forma estricta
         df_exitosos = df_exitosos.sort_values(
             by=["sonda_nombre", "timestamp"]
         ).reset_index(drop=True)
@@ -218,7 +214,7 @@ try:
                 x="timestamp",
                 y="rtt_avg_ms",
                 color="sonda_nombre",
-                line_group="sonda_nombre",  # Fuerza la agrupación unívoca de la línea
+                line_group="sonda_nombre",
                 markers=True,
                 hover_data=["hora_corta", "asn", "ubicacion"],
                 labels={
@@ -233,7 +229,6 @@ try:
                 line=dict(width=2.5), marker=dict(size=6), connectgaps=False
             )
 
-            # ANOTACIÓN DE EVENTOS EN EL TIEMPO CONVERTIENDO A MILISEGUNDOS
             fecha_sismo = pd.to_datetime("2026-06-24 18:00:00")
             fecha_cable = pd.to_datetime("2026-07-22 00:00:00")
 
@@ -305,7 +300,7 @@ try:
 
     st.markdown("---")
 
-    # --- MAPA DE CALOR (HEATMAP DIARIO POR SONDA) ---
+    # --- MAPA DE CALOR ---
     st.subheader("🔥 Mapa de Calor: Latencia Promedio Diaria por Sonda")
     st.caption(
         "Identifica patrones globales de congestión y el impacto antes/después del sismo y la reparación del cable."
@@ -415,7 +410,7 @@ try:
 
     st.markdown("---")
 
-    # --- SECCIÓN TRACEROUTES 1: ESTABILIDAD DE SALTOS (ANTERIOR) ---
+    # --- SECCIÓN TRACEROUTES 1: ESTABILIDAD DE SALTOS ---
     st.subheader("🗺️ Estabilidad de Rutas de Transporte (Saltos / Hops)")
     st.caption(
         "Muestra el promedio acumulado de saltos requeridos por cada sonda para llegar al destino."
@@ -452,7 +447,9 @@ try:
         )
         st.plotly_chart(fig_hops, use_container_width=True)
 
-# --- SECCIÓN TRACEROUTES 2: INSPECCIÓN SALTO POR SALTO ---
+    st.markdown("---")
+
+    # --- SECCIÓN TRACEROUTES 2: INSPECCIÓN SALTO POR SALTO ---
     st.subheader(f"🔎 Inspección de Ruta Salto por Salto hacia {sitio_sel}")
     st.caption(
         "Desglose secuencial de la ruta IP tomada por una sonda específica y la latencia (RTT) acumulada en cada salto."
@@ -467,10 +464,6 @@ try:
         & (df_saltos["sonda_nombre"] == sonda_inspeccion)
     ].copy()
 
-    # -----------------------------------------------------------------
-    # 🚨 FILTROS CLAVE PARA EVITAR CORRUPCIÓN DEL EJE X Y LÍNEAS ZIG-ZAG
-    # -----------------------------------------------------------------
-    # Convertir a numérico por seguridad y eliminar saltos anómalos/imposibles
     df_saltos_filt["hop_num"] = pd.to_numeric(
         df_saltos_filt["hop_num"], errors="coerce"
     )
@@ -478,13 +471,12 @@ try:
     df_saltos_validos = df_saltos_filt[
         (df_saltos_filt["hop_num"].notnull())
         & (df_saltos_filt["hop_num"] > 0)
-        & (df_saltos_filt["hop_num"] <= 30)  # Limita a un rango RFC real de traceroute
+        & (df_saltos_filt["hop_num"] <= 30)
         & (df_saltos_filt["rtt_hop_ms"].notnull())
         & (df_saltos_filt["rtt_hop_ms"] >= 0)
     ].copy()
 
     if not df_saltos_validos.empty:
-        # Agrupar ordenadamente por número de salto
         df_hop_profile = (
             df_saltos_validos.groupby("hop_num", as_index=False)
             .agg(
@@ -511,7 +503,6 @@ try:
             "rtt_promedio_ms"
         ].round(2)
 
-        # Gráfica de línea limpia
         fig_path = px.line(
             df_hop_profile,
             x="hop_num",
@@ -532,10 +523,9 @@ try:
             line=dict(width=2.5),
             marker=dict(size=8),
             textfont_size=11,
-            connectgaps=False,  # Deja huecos en saltos que no respondieron (*)
+            connectgaps=False,
         )
 
-        # Ajustar el eje X para que muestre saltos enteros (1, 2, 3...)
         max_hop = int(df_hop_profile["hop_num"].max())
         fig_path.update_xaxes(
             dtick=1, range=[0, max_hop + 1], title="Número de Salto (Hop)"
@@ -546,7 +536,6 @@ try:
 
         st.plotly_chart(fig_path, use_container_width=True)
 
-        # Tabla de detalle
         st.dataframe(
             df_hop_profile[
                 [
@@ -573,7 +562,9 @@ try:
     else:
         st.info("No hay trazas de saltos válidas registradas para esta sonda.")
 
-# --- SECCIÓN TRACEROUTES 3: COMPARATIVO MULTI-SONDA SALTO POR SALTO ---
+    st.markdown("---")
+
+    # --- SECCIÓN TRACEROUTES 3: COMPARATIVO MULTI-SONDA SALTO POR SALTO ---
     st.subheader(
         f"📊 Comparativa de Rutas Salto a Salto entre Sondas hacia {sitio_sel}"
     )
@@ -583,13 +574,11 @@ try:
         " divergencias de latencia."
     )
 
-    # Filtrar datos de traceroute para TODAS las sondas seleccionadas en la barra lateral
     df_saltos_comp = df_saltos[
         (df_saltos["sitio_web"] == sitio_sel)
         & (df_saltos["sonda_nombre"].isin(sondas_sel))
     ].copy()
 
-    # Sanitización de datos
     df_saltos_comp["hop_num"] = pd.to_numeric(
         df_saltos_comp["hop_num"], errors="coerce"
     )
@@ -603,7 +592,6 @@ try:
     ].copy()
 
     if not df_saltos_comp_validos.empty:
-        # Agrupar por Número de Salto Y Nombre de Sonda
         df_comp_profile = (
             df_saltos_comp_validos.groupby(
                 ["hop_num", "sonda_nombre"], as_index=False
@@ -617,12 +605,11 @@ try:
             "rtt_promedio_ms"
         ].round(2)
 
-        # Gráfica multilínea
         fig_comp = px.line(
             df_comp_profile,
             x="hop_num",
             y="rtt_promedio_ms",
-            color="sonda_nombre",  # Separa las líneas por color para cada sonda
+            color="sonda_nombre",
             line_group="sonda_nombre",
             markers=True,
             title=f"Comparativa de Perfil de Latencia Salto por Salto — {sitio_sel}",
@@ -646,7 +633,7 @@ try:
 
         fig_comp.update_layout(
             font=dict(size=13),
-            hovermode="x unified",  # Muestra la latencia de todas las sondas al pasar el mouse por un salto
+            hovermode="x unified",
             legend=dict(
                 orientation="h",
                 yanchor="bottom",
@@ -663,7 +650,175 @@ try:
             " seleccionadas."
         )
 
+    st.markdown("---")
 
+    # ==============================================================================
+    # 🌊 SANKEY 1: LATENCIA RTT ORIGEN (ISPs / PROBES) → DESTINO (IMAGEN 1 DE LA PROF.)
+    # ==============================================================================
+    st.subheader(f"🌊 Diagrama Sankey: Latencia RTT Origen (ISPs) → {sitio_sel}")
+    st.caption(
+        "Mapea el volumen de latencia (RTT Promedio ms) consumido por cada ISP/Sonda hacia el destino final."
+    )
+
+    if not df_p_filt.empty:
+        df_sankey_rtt = (
+            df_p_filt[df_p_filt["alcanzable"] == True]
+            .groupby(["sonda_nombre", "sitio_web"])["rtt_avg_ms"]
+            .mean()
+            .reset_index()
+        )
+
+        if not df_sankey_rtt.empty:
+            nodos_rtt = pd.unique(df_sankey_rtt[["sonda_nombre", "sitio_web"]].values.ravel())
+            idx_rtt = {n: i for i, n in enumerate(nodos_rtt)}
+
+            df_sankey_rtt["src_idx"] = df_sankey_rtt["sonda_nombre"].map(idx_rtt)
+            df_sankey_rtt["dst_idx"] = df_sankey_rtt["sitio_web"].map(idx_rtt)
+
+            fig_s1 = go.Figure(
+                data=[
+                    go.Sankey(
+                        node=dict(
+                            pad=15,
+                            thickness=20,
+                            line=dict(color="black", width=0.5),
+                            label=list(nodos_rtt),
+                        ),
+                        link=dict(
+                            source=df_sankey_rtt["src_idx"],
+                            target=df_sankey_rtt["dst_idx"],
+                            value=df_sankey_rtt["rtt_avg_ms"],
+                            label=df_sankey_rtt["rtt_avg_ms"].round(2).astype(str) + " ms",
+                        ),
+                    )
+                ]
+            )
+
+            fig_s1.update_layout(
+                title_text=f"Sankey RTT Origen (ISPs) → Destino ({sitio_sel})",
+                font_size=12,
+                height=500,
+            )
+            st.plotly_chart(fig_s1, use_container_width=True)
+
+    st.markdown("---")
+
+    # ==============================================================================
+    # 🔀 SANKEY 2: RUTAS DE ENTRADA POR ASN (IMAGEN 2 DE LA PROF.)
+    # (Origen → Penúltimo ASN → Último ASN → Destino)
+    # ==============================================================================
+    st.subheader(f"🔀 Rutas de Entrada: Origen → Penúltimo ASN → Último ASN → {sitio_sel}")
+    st.caption(
+        "Visualiza el camino de los Sistemas Autónomos (ASN) transitados desde las sondas/ISPs hasta llegar al ASN del destino."
+    )
+
+    if not df_saltos_filt.empty:
+        # Extraer el primer ASN (Origen), el penúltimo ASN y el último ASN por cada traza
+        df_s_valid = df_saltos[
+            (df_saltos["sitio_web"] == sitio_sel)
+            & (df_saltos["sonda_nombre"].isin(sondas_sel))
+            & (df_saltos["proveedor_salto"].notnull())
+            & (df_saltos["proveedor_salto"] != "N/A")
+            & (df_saltos["proveedor_salto"] != "*")
+        ].copy()
+
+        if not df_s_valid.empty:
+            # Agrupar trazas para obtener Origen, Penúltimo y Último ASN por cada flujo
+            trazas_asn = (
+                df_s_valid.groupby(["sonda_nombre", "timestamp"])["proveedor_salto"]
+                .apply(list)
+                .reset_index()
+            )
+
+            enlaces_list = []
+            for _, row in trazas_asn.iterrows():
+                path = row["proveedor_salto"]
+                sonda = row["sonda_nombre"]
+                if len(path) >= 2:
+                    penultimo = path[-2]
+                    ultimo = path[-1]
+                    enlaces_list.append(
+                        {
+                            "Origen": sonda,
+                            "Penultimo_ASN": f"Penúltimo: {penultimo}",
+                            "Ultimo_ASN": f"Último: {ultimo}",
+                            "Destino": sitio_sel,
+                        }
+                    )
+                elif len(path) == 1:
+                    ultimo = path[0]
+                    enlaces_list.append(
+                        {
+                            "Origen": sonda,
+                            "Penultimo_ASN": f"Penúltimo: {ultimo}",
+                            "Ultimo_ASN": f"Último: {ultimo}",
+                            "Destino": sitio_sel,
+                        }
+                    )
+
+            df_paths = pd.DataFrame(enlaces_list)
+
+            if not df_paths.empty:
+                # 1. Origen -> Penúltimo
+                l1 = (
+                    df_paths.groupby(["Origen", "Penultimo_ASN"])
+                    .size()
+                    .reset_index(name="count")
+                    .rename(columns={"Origen": "source", "Penultimo_ASN": "target"})
+                )
+
+                # 2. Penúltimo -> Último
+                l2 = (
+                    df_paths.groupby(["Penultimo_ASN", "Ultimo_ASN"])
+                    .size()
+                    .reset_index(name="count")
+                    .rename(columns={"Penultimo_ASN": "source", "Ultimo_ASN": "target"})
+                )
+
+                # 3. Último -> Destino
+                l3 = (
+                    df_paths.groupby(["Ultimo_ASN", "Destino"])
+                    .size()
+                    .reset_index(name="count")
+                    .rename(columns={"Ultimo_ASN": "source", "Destino": "target"})
+                )
+
+                df_links = pd.concat([l1, l2, l3], ignore_index=True)
+
+                nodos_asn = pd.unique(df_links[["source", "target"]].values.ravel())
+                idx_asn = {n: i for i, n in enumerate(nodos_asn)}
+
+                df_links["source_idx"] = df_links["source"].map(idx_asn)
+                df_links["target_idx"] = df_links["target"].map(idx_asn)
+
+                fig_s2 = go.Figure(
+                    data=[
+                        go.Sankey(
+                            node=dict(
+                                pad=15,
+                                thickness=20,
+                                line=dict(color="black", width=0.5),
+                                label=list(nodos_asn),
+                            ),
+                            link=dict(
+                                source=df_links["source_idx"],
+                                target=df_links["target_idx"],
+                                value=df_links["count"],
+                            ),
+                        )
+                    ]
+                )
+
+                fig_s2.update_layout(
+                    title_text=f"Rutas de entrada: origen → penúltimo ASN → último ASN → {sitio_sel}",
+                    font_size=12,
+                    height=550,
+                )
+                st.plotly_chart(fig_s2, use_container_width=True)
+            else:
+                st.info("No hay suficientes saltos ASN para armar el flujo de entrada.")
+        else:
+            st.info("No hay trazas de proveedores/ASN registradas para los filtros seleccionados.")
 
 except FileNotFoundError:
     st.error(
