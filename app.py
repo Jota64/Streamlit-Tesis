@@ -303,7 +303,7 @@ try:
     # --- MAPA DE CALOR ---
     st.subheader("🔥 Mapa de Calor: Latencia Promedio Diaria por Sonda")
     st.caption(
-        "Identifica patrones globales de congestión y el impacto antes/después del sismo y la reparación del cable."
+        "Identifica patrones globales de congestión e impacto de eventos (Verde: Baja latencia | Rojo: Alta latencia)."
     )
 
     if not df_p_filt.empty:
@@ -317,17 +317,28 @@ try:
                 index="sonda_nombre", columns="fecha", values="rtt_avg_ms"
             )
 
+            # Paleta de colores personalizada: Verde (bajo RTT) -> Amarillo -> Rojo (alto RTT)
+            escala_trafico = [
+                [0.0, "#2ca02c"],   # Verde (Rápido / Óptimo)
+                [0.5, "#ff7f0e"],   # Naranja/Amarillo (Intermedio)
+                [1.0, "#d62728"]    # Rojo (Latencia alta / Congestión)
+            ]
+
             fig_heat = px.imshow(
                 df_pivot,
                 labels=dict(
                     x="Fecha", y="Sonda / Proveedor", color="RTT Promedio (ms)"
                 ),
-                color_continuous_scale="Viridis_r",
+                color_continuous_scale=escala_trafico,
                 aspect="auto",
                 height=420,
             )
             fig_heat.update_xaxes(side="bottom")
-            fig_heat.update_layout(font=dict(size=13))
+            fig_heat.update_layout(
+                font=dict(size=13),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
             st.plotly_chart(fig_heat, use_container_width=True)
 
     st.markdown("---")
@@ -704,16 +715,17 @@ try:
     st.markdown("---")
 
     # ==============================================================================
-    # 🔀 SANKEY 2: RUTAS DE ENTRADA POR ASN (IMAGEN 2 DE LA PROF.)
-    # (Origen → Penúltimo ASN → Último ASN → Destino)
+    # 🔀 SANKEY 2: RUTAS DE ENTRADA POR ASN (CON SUS COLORES ORIGINARIOS Y ORDENADO POR RTT)
     # ==============================================================================
-    st.subheader(f"🔀 Rutas de Entrada: Origen → Penúltimo ASN → Último ASN → {sitio_sel}")
+    st.subheader(
+        f"🔀 Rutas de Entrada: Origen → Penúltimo ASN → Último ASN → {sitio_sel}"
+    )
     st.caption(
-        "Visualiza el camino de los Sistemas Autónomos (ASN) transitados desde las sondas/ISPs hasta llegar al ASN del destino."
+        "Visualiza la trayectoria por ASN, ordenada de menor a mayor latencia"
+        " promedio en el origen."
     )
 
     if not df_saltos_filt.empty:
-        # Extraer el primer ASN (Origen), el penúltimo ASN y el último ASN por cada traza
         df_s_valid = df_saltos[
             (df_saltos["sitio_web"] == sitio_sel)
             & (df_saltos["sonda_nombre"].isin(sondas_sel))
@@ -723,9 +735,19 @@ try:
         ].copy()
 
         if not df_s_valid.empty:
-            # Agrupar trazas para obtener Origen, Penúltimo y Último ASN por cada flujo
+            # 1. RTT promedio por sonda para definir el orden
+            rtt_por_sonda = (
+                df_p_filt[df_p_filt["alcanzable"] == True]
+                .groupby("sonda_nombre")["rtt_avg_ms"]
+                .mean()
+                .to_dict()
+            )
+
+            # 2. Reconstrucción de la trayectoria por traza
             trazas_asn = (
-                df_s_valid.groupby(["sonda_nombre", "timestamp"])["proveedor_salto"]
+                df_s_valid.groupby(["sonda_nombre", "timestamp"])[
+                    "proveedor_salto"
+                ]
                 .apply(list)
                 .reset_index()
             )
@@ -759,7 +781,6 @@ try:
             df_paths = pd.DataFrame(enlaces_list)
 
             if not df_paths.empty:
-                # 1. Origen -> Penúltimo
                 l1 = (
                     df_paths.groupby(["Origen", "Penultimo_ASN"])
                     .size()
@@ -767,15 +788,15 @@ try:
                     .rename(columns={"Origen": "source", "Penultimo_ASN": "target"})
                 )
 
-                # 2. Penúltimo -> Último
                 l2 = (
                     df_paths.groupby(["Penultimo_ASN", "Ultimo_ASN"])
                     .size()
                     .reset_index(name="count")
-                    .rename(columns={"Penultimo_ASN": "source", "Ultimo_ASN": "target"})
+                    .rename(
+                        columns={"Penultimo_ASN": "source", "Ultimo_ASN": "target"}
+                    )
                 )
 
-                # 3. Último -> Destino
                 l3 = (
                     df_paths.groupby(["Ultimo_ASN", "Destino"])
                     .size()
@@ -785,7 +806,19 @@ try:
 
                 df_links = pd.concat([l1, l2, l3], ignore_index=True)
 
-                nodos_asn = pd.unique(df_links[["source", "target"]].values.ravel())
+                # 3. ORDENAR NODOS DE ORIGEN POR RTT
+                origenes_unicos = df_paths["Origen"].unique().tolist()
+                origenes_ordenados = sorted(
+                    origenes_unicos, key=lambda s: rtt_por_sonda.get(s, 9999)
+                )
+
+                otros_nodos = [
+                    n
+                    for n in pd.unique(df_links[["source", "target"]].values.ravel())
+                    if n not in origenes_ordenados
+                ]
+
+                nodos_asn = origenes_ordenados + otros_nodos
                 idx_asn = {n: i for i, n in enumerate(nodos_asn)}
 
                 df_links["source_idx"] = df_links["source"].map(idx_asn)
@@ -799,6 +832,7 @@ try:
                                 thickness=20,
                                 line=dict(color="black", width=0.5),
                                 label=list(nodos_asn),
+                                # Se eliminó la propiedad 'color' fija para recuperar la paleta por defecto
                             ),
                             link=dict(
                                 source=df_links["source_idx"],
@@ -810,15 +844,25 @@ try:
                 )
 
                 fig_s2.update_layout(
-                    title_text=f"Rutas de entrada: origen → penúltimo ASN → último ASN → {sitio_sel}",
-                    font_size=12,
+                    title_text=(
+                        f"Rutas de entrada: origen → penúltimo ASN → último ASN →"
+                        f" {sitio_sel} (Ordenado por RTT)"
+                    ),
+                    font=dict(size=12),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
                     height=550,
                 )
                 st.plotly_chart(fig_s2, use_container_width=True)
             else:
-                st.info("No hay suficientes saltos ASN para armar el flujo de entrada.")
+                st.info(
+                    "No hay suficientes saltos ASN para armar el flujo de entrada."
+                )
         else:
-            st.info("No hay trazas de proveedores/ASN registradas para los filtros seleccionados.")
+            st.info(
+                "No hay trazas de proveedores/ASN registradas para los filtros"
+                " seleccionados."
+            )
 
 except FileNotFoundError:
     st.error(
