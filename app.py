@@ -864,6 +864,45 @@ try:
                 " seleccionados."
             )
 
+# ==============================================================================
+    # 💾 SECCIÓN DE AUDITORÍA Y DATOS EN CRUDO
+    # ==============================================================================
+    st.markdown("---")
+    st.subheader("🛠️ Auditoría y Inspección de Datos en Crudo")
+
+    with st.expander(
+        f"📋 Explorar Registros en Crudo para {sitio_sel} (JSON / Tabla)"
+    ):
+        st.write(
+            "Visualiza y descarga la data estructurada directamente procesada"
+            " desde RIPE Atlas."
+        )
+
+        tab_tabla, tab_json = st.tabs(
+            ["📊 Tabla Procesada (Filtrada)", "📄 JSON Crudo Original"]
+        )
+
+        with tab_tabla:
+            st.dataframe(df_p_filt, use_container_width=True)
+
+            # Botón para descargar a CSV cómodo para Excel
+            csv_data = df_p_filt.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="📥 Descargar Mediciones Filtradas (CSV / Excel)",
+                data=csv_data,
+                file_name=f"mediciones_pings_{sitio_sel}.csv",
+                mime="text/csv",
+            )
+
+        with tab_json:
+            st.caption(
+                "Muestra representativa de los objetos JSON originales"
+                " retornados por la API de RIPE Atlas:"
+            )
+            # Muestra hasta 5 registros crudos convertidos a diccionario limpio
+            registros_crudos = df_p_filt.head(5).to_dict(orient="records")
+            st.json(registros_crudos)
+
 except FileNotFoundError:
     st.error(
         "Ejecuta `procesar_datos.py` para sincronizar los timestamps con UTC-4 y generar la estructura de saltos."
