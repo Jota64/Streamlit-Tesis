@@ -1,0 +1,5 @@
+﻿Servicio,IPv4,Primera medición,Última medición,Ping registrados,Traceroute registrados,Observación
+Intranet ULA,150.185.169.243,2026-06-16 22:00:23,2026-08-14 10:06:31,882,868,Inicio posterior por sustitución del destino inicial
+Biblioteca Digital / Vereda,190.168.5.91,2026-06-15 10:01:56,2026-08-14 10:06:30,888,873,Cobertura regular observada
+Sistema de Grados,150.185.169.46,2026-06-15 10:00:41,2026-08-14 10:06:14,906,879,Cobertura regular observada
+Saber ULA,190.168.5.17,2026-06-15 10:01:02,2026-08-14 10:06:28,892,878,Cobertura regular observada
