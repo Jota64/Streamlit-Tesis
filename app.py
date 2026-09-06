@@ -1,4 +1,4 @@
-"""Dashboard V3 de telemetría para la tesis ULA.
+"""Dashboard V3.3 de telemetría para la tesis ULA.
 
 Objetivo de V3
 --------------
@@ -19,7 +19,9 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+import io
 import re
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -29,13 +31,23 @@ import streamlit as st
 
 OUT_CANDIDATES = [Path("salidas_tesis_v3"), Path("salidas_tesis")]
 
+PLOTLY_CONFIG = {
+    "displaylogo": False,
+    "displayModeBar": True,
+    "toImageButtonOptions": {
+        "format": "png",
+        "filename": "grafico_tesis_ULA",
+        "scale": 2,
+    },
+}
+
 st.set_page_config(
-    page_title="Telemetría ULA — Dashboard V3",
+    page_title="Telemetría ULA — Dashboard V3.3",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("📊 Telemetría de conectividad hacia servicios ULA — V3")
+st.title("📊 Telemetría de conectividad hacia servicios ULA — V3.3")
 st.caption(
     "RIPE Atlas (Ping/Traceroute) + OONI · Hora local America/Caracas · "
     "Visualización exploratoria basada en el pipeline metodológico V3"
@@ -85,6 +97,32 @@ def cargar_datos():
         "tabla_3_5_cobertura_servicios", ["Primera medición", "Última medición"]
     )
     return p, t, h, o, c_sondas, c_serv
+
+
+
+@st.cache_data(show_spinner=False)
+def paquete_capitulo_iv() -> bytes:
+    """Empaqueta los seis datasets procesados usados para el análisis del Capítulo IV."""
+    nombres = [
+        "pings_ejecuciones",
+        "traceroutes_resumen",
+        "traceroutes_hops_app",
+        "ooni_diario",
+        "tabla_3_4_cobertura_sondas",
+        "tabla_3_5_cobertura_servicios",
+    ]
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for nombre in nombres:
+            csv_path = OUT / f"{nombre}.csv"
+            gz_path = OUT / f"{nombre}.csv.gz"
+            if csv_path.exists():
+                zf.write(csv_path, arcname=csv_path.name)
+            elif gz_path.exists():
+                zf.write(gz_path, arcname=gz_path.name)
+            else:
+                raise FileNotFoundError(f"No se encontró {nombre}.csv ni {nombre}.csv.gz")
+    return buffer.getvalue()
 
 
 def pct(n: float, d: float) -> float:
@@ -638,7 +676,7 @@ with tab_resumen:
         )
         fig.update_traces(texttemplate="%{y:.1f} ms", textposition="outside")
         fig.update_layout(height=470, xaxis_tickangle=-35)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
         st.markdown("#### Nacionales vs. internacionales")
         st.caption(
@@ -660,7 +698,7 @@ with tab_resumen:
                     labels={"tipo_sonda": "Grupo", "rtt_exec_ms": "RTT por ejecución (ms)"},
                     title="Distribución por grupo",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
             with c2:
                 grp = (
                     comp.groupby("tipo_sonda")["rtt_exec_ms"]
@@ -678,7 +716,7 @@ with tab_resumen:
                     text_auto=".1f",
                     title="Mediana, media y P95 por grupo",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
 # -----------------------------------------------------------------------------
 # TAB 2 - RTT Y TIEMPO
@@ -737,7 +775,7 @@ with tab_rtt:
                 ]
             )
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
         st.caption(
             "No se muestran anotaciones causales de eventos externos. Cualquier evento futuro deberá estar documentado con una fuente temporal independiente."
         )
@@ -761,7 +799,7 @@ with tab_rtt:
                 height=460,
             )
             fig.update_xaxes(side="bottom")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
             st.caption("Los espacios sin color representan ausencia de un RTT válido para esa combinación sonda-día.")
 
         st.subheader("Distribución de RTT por sonda")
@@ -773,7 +811,7 @@ with tab_rtt:
             labels={"sonda_nombre": "Sonda", "rtt_exec_ms": "RTT por ejecución (ms)"},
         )
         fig.update_layout(height=500, xaxis_tickangle=-35)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
 # -----------------------------------------------------------------------------
 # TAB 3 - ALCANZABILIDAD
@@ -797,7 +835,7 @@ with tab_alc:
             labels={"sonda_nombre": "Sonda", "estado_ping": "Estado"},
         )
         fig.update_layout(height=500, xaxis_tickangle=-35)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
         st.markdown("#### Alcanzabilidad y pérdida por sonda")
         resumen = resumen_sondas_ping(p)
@@ -817,7 +855,7 @@ with tab_alc:
                 text_auto=".1f",
             )
             fig.update_layout(height=480, xaxis_tickangle=-35)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
         st.markdown("#### Comparación entre franjas")
         fr = []
@@ -862,7 +900,7 @@ with tab_trace:
                 labels={"TTL mediano destino": "TTL mediano del destino (hops)"},
             )
             fig.update_layout(height=460, xaxis_tickangle=-35)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
             st.caption(
                 "Se excluyen de esta métrica los casos donde RIPE Atlas confirma el destino mediante el registro especial hop=255, porque ese valor no representa 255 saltos."
             )
@@ -878,7 +916,7 @@ with tab_trace:
                 labels={"ultimo_hop_respondiente": "Último TTL ordinario respondiente", "sonda_nombre": "Sonda"},
             )
             fig.update_layout(height=500)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
         st.markdown("#### Rutas IP más frecuentes")
         route_counts = (
@@ -915,7 +953,7 @@ with tab_rutas:
                 title=f"Perfil de RTT de la ruta IP dominante hacia {servicio}",
             )
             fig.update_layout(height=560, legend=dict(orientation="h", y=1.02, x=1, xanchor="right"))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
             st.caption(
                 "A diferencia del gráfico V1, cada línea se restringe a la firma IP dominante de esa sonda; no mezcla indiscriminadamente hops de rutas diferentes."
             )
@@ -931,7 +969,7 @@ with tab_rutas:
         top_n = st.slider("Número máximo de firmas ASN principales", 3, 15, 8)
         fig, paths_counts, edges = sankey_asn_limpio(t, h, servicio, sondas_sel, top_n)
         if fig is not None:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
             st.caption(
                 "El ancho representa frecuencia de traceroutes. No representa RTT ni volumen real de tráfico. Las etiquetas ASN se normalizan para evitar objetos/diccionarios ilegibles."
             )
@@ -947,7 +985,7 @@ with tab_rutas:
             top_rows = st.slider("Máximo de combinaciones de entrada a mostrar", 5, 40, 20)
             fig = sankey_rutas_entrada(rutas, h, servicio, top_rows)
             if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
             st.caption(
                 "'Penúltimo' y 'último' se refieren a los últimos ASN atribuibles observados antes del destino; no representan necesariamente puntos físicos de entrada. "
                 f"Trazas sin secuencia ASN suficiente omitidas de esta visualización: {omitidas}."
@@ -966,7 +1004,7 @@ with tab_rutas:
                 title="Últimos ASN atribuibles más frecuentes antes del destino",
             )
             fig.update_layout(height=470, xaxis_tickangle=-35)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
     st.markdown("---")
     st.subheader("🧪 Inspección de una traza concreta")
@@ -1037,7 +1075,7 @@ with tab_ooni:
             labels={"fecha": "Fecha"},
         )
         fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
         st.caption(
             "OONI se usa como evidencia complementaria. 'Anomalía' o 'fallo' no se interpretan automáticamente como bloqueo, censura o indisponibilidad total."
         )
@@ -1060,7 +1098,7 @@ with tab_ooni:
                 long2 = merged.melt("fecha", var_name="Indicador", value_name="Porcentaje")
                 fig = px.line(long2, x="fecha", y="Porcentaje", color="Indicador", markers=True)
                 fig.update_layout(height=430)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
                 st.caption("Comparación agregada a escala diaria; los CSV OONI no permiten emparejamiento exacto 10:00 vs. 22:00.")
 
 # -----------------------------------------------------------------------------
@@ -1078,6 +1116,33 @@ with tab_cov:
 # -----------------------------------------------------------------------------
 with tab_raw:
     st.subheader("🛠️ Auditoría e inspección de datos procesados")
+
+    st.markdown("### 📦 Paquete de datos para el Capítulo IV")
+    st.write(
+        "Descarga en un solo ZIP los seis archivos procesados necesarios para "
+        "revisar los resultados, comparar las figuras y desarrollar el Capítulo IV."
+    )
+    try:
+        st.download_button(
+            "⬇️ Descargar paquete completo del Capítulo IV (6 archivos)",
+            data=paquete_capitulo_iv(),
+            file_name="datos_capitulo_IV_ULA.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
+        st.caption(
+            "Incluye Ping, resumen de Traceroute, hops compactos, OONI y las tablas "
+            "de cobertura 3.4 y 3.5."
+        )
+    except FileNotFoundError as exc:
+        st.warning(f"No se pudo preparar el paquete: {exc}")
+
+    st.info(
+        "📷 Para guardar cualquier gráfico como PNG, coloca el cursor sobre la figura "
+        "y pulsa el icono de cámara de la barra superior derecha. La captura se genera "
+        "en alta resolución (escala 2×)."
+    )
+
     st.write("Ping filtrado")
     st.dataframe(p, use_container_width=True, hide_index=True)
     st.download_button(
