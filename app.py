@@ -1,4 +1,4 @@
-"""Dashboard V3.4 de telemetría para la tesis ULA.
+"""Dashboard V3.4.1.1 de telemetría para la tesis ULA.
 
 Objetivo de V3
 --------------
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+import gzip
 import io
 import re
 import zipfile
@@ -58,12 +59,12 @@ def plotly_config(nombre: str) -> dict:
     }
 
 st.set_page_config(
-    page_title="Telemetría ULA — Dashboard V3.4",
+    page_title="Telemetría ULA — Dashboard V3.4.1",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("📊 Telemetría de conectividad hacia servicios ULA — V3.4")
+st.title("📊 Telemetría de conectividad hacia servicios ULA — V3.4.1")
 st.caption(
     "RIPE Atlas (Ping/Traceroute) + OONI · Hora local America/Caracas · "
     "Visualización exploratoria basada en el pipeline metodológico V3"
