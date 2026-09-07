@@ -1,4 +1,4 @@
-"""Dashboard V3.5 de telemetría para la tesis ULA.
+"""Dashboard V3.6 de telemetría para la tesis ULA.
 
 Objetivo de V3
 --------------
@@ -51,6 +51,53 @@ IXP_NETWORKS = [
     (ipaddress.ip_network("206.223.124.0/24"), "IXP · NAP Colombia (Bogotá)"),
 ]
 
+SERVICE_ORDER = [
+    "Biblioteca Digital / Vereda",
+    "Intranet ULA",
+    "Sistema de Grados",
+    "Saber ULA",
+]
+SERVICE_SHORT = {
+    "Biblioteca Digital / Vereda": "Vereda",
+    "Intranet ULA": "Intranet",
+    "Sistema de Grados": "Grados",
+    "Saber ULA": "Saber",
+}
+PROBE_ORDER = [
+    "ULA (Mérida)",
+    "CANTV (Caracas)",
+    "NetUno (Caracas)",
+    "Movistar (Maracay)",
+    "Inter (Barquisimeto)",
+    "Airtek (Maracaibo)",
+    "Tiggee (Bogotá)",
+    "Satnet (Quito)",
+    "AT&T (Miami)",
+]
+HEATMAP_SCALE_GOOD = [
+    [0.0, "#d73027"],
+    [0.5, "#fee08b"],
+    [1.0, "#1a9850"],
+]
+OONI_COLOR_MAP = {
+    "ok_count": "#1a9850",
+    "anomaly_count": "#f1c40f",
+    "failure_count": "#d73027",
+    "confirmed_count": "#7f0000",
+    "OK": "#1a9850",
+    "Anomaly": "#f1c40f",
+    "Failure": "#d73027",
+    "Confirmed": "#7f0000",
+}
+SESSION_COLOR_MAP = {"Todas": "#1a9850", "Parcial": "#f1c40f", "Ninguna": "#d73027"}
+FRANJA_COLOR_MAP = {"Matutina (~10:00)": "#1a9850", "Nocturna (~22:00)": "#d73027"}
+PERIODO_COLOR_MAP = {
+    "Antes del sismo": "#7f8c8d",
+    "Contingencia (24-Jun a 23-Jul)": "#f39c12",
+    "Después de la reconexión": "#1a9850",
+}
+
+
 def _slug_archivo(valor: str) -> str:
     """Nombre seguro y legible para descargas de figuras."""
     txt = str(valor)
@@ -78,12 +125,12 @@ def plotly_config(nombre: str) -> dict:
     }
 
 st.set_page_config(
-    page_title="Telemetría ULA — Dashboard V3.5",
+    page_title="Telemetría ULA — Dashboard V3.6",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("📊 Telemetría de conectividad hacia servicios ULA — V3.5")
+st.title("📊 Telemetría de conectividad hacia servicios ULA — V3.6")
 st.caption(
     "RIPE Atlas (Ping/Traceroute) + OONI · Hora local America/Caracas · "
     "Visualización exploratoria basada en el pipeline metodológico V3"
@@ -172,6 +219,10 @@ def paquete_capitulo_iv() -> bytes:
 
 def pct(n: float, d: float) -> float:
     return (100.0 * n / d) if d else np.nan
+
+
+def short_service_name(servicio: str) -> str:
+    return SERVICE_SHORT.get(servicio, servicio)
 
 
 def fmt_num(v: float, dec: int = 1, suffix: str = "") -> str:
@@ -764,6 +815,19 @@ p = p_base[p_base["sonda_nombre"].isin(sondas_sel)].copy()
 t = t_base[t_base["sonda_nombre"].isin(sondas_sel)].copy()
 h = h_base[h_base["sonda_nombre"].isin(sondas_sel)].copy()
 
+# Versiones globales para las figuras comparativas del Capítulo IV.
+p_all = df_p.copy()
+t_all = df_t.copy()
+o_all = df_o.copy()
+if tipo != "Todos":
+    p_all = p_all[p_all["tipo_sonda"] == tipo]
+    t_all = t_all[t_all["tipo_sonda"] == tipo]
+if franja != "Todas":
+    p_all = p_all[p_all["franja"] == franja]
+    t_all = t_all[t_all["franja"] == franja]
+p_all = p_all[p_all["sonda_nombre"].isin(sondas_sel)].copy()
+t_all = t_all[t_all["sonda_nombre"].isin(sondas_sel)].copy()
+
 # -----------------------------------------------------------------------------
 # KPIs
 # -----------------------------------------------------------------------------
@@ -789,6 +853,7 @@ st.caption(
     tab_trace,
     tab_rutas,
     tab_ooni,
+    tab_comp,
     tab_cov,
     tab_raw,
 ) = st.tabs(
@@ -799,6 +864,7 @@ st.caption(
         "Traceroute",
         "Rutas / ASN",
         "OONI",
+        "Comparativo Cap. IV",
         "Cobertura",
         "Auditoría",
     ]
@@ -1277,13 +1343,23 @@ with tab_ooni:
             var_name="estado",
             value_name="Mediciones",
         )
+        long["estado"] = long["estado"].map(
+            {
+                "ok_count": "OK",
+                "anomaly_count": "Anomaly",
+                "failure_count": "Failure",
+                "confirmed_count": "Confirmed",
+            }
+        )
         fig = px.bar(
             long,
             x="fecha",
             y="Mediciones",
             color="estado",
             barmode="stack",
-            labels={"fecha": "Fecha"},
+            labels={"fecha": "Fecha", "estado": "Resultado"},
+            color_discrete_map=OONI_COLOR_MAP,
+            category_orders={"estado": ["OK", "Anomaly", "Failure", "Confirmed"]},
         )
         fig.update_layout(height=500)
         st.plotly_chart(fig, use_container_width=True, config=plotly_config(f"{servicio}_12_OONI"))
@@ -1311,6 +1387,225 @@ with tab_ooni:
                 fig.update_layout(height=430)
                 st.plotly_chart(fig, use_container_width=True, config=plotly_config(f"{servicio}_12_OONI_vs_RIPE"))
                 st.caption("Comparación agregada a escala diaria; los CSV OONI no permiten emparejamiento exacto 10:00 vs. 22:00.")
+
+# -----------------------------------------------------------------------------
+# TAB 7 - COMPARATIVO CAPÍTULO IV
+# -----------------------------------------------------------------------------
+with tab_comp:
+    st.subheader("📚 Figuras comparativas candidatas para el Capítulo IV")
+    st.caption(
+        "Estas figuras comparan simultáneamente los cuatro servicios institucionales. "
+        "Respetan los filtros de grupo geográfico, franja y sondas seleccionadas. "
+        "La selección lateral de un servicio individual no afecta este panel."
+    )
+
+    pv_all = p_all[pd.to_numeric(p_all["sent"], errors="coerce").fillna(0) > 0].copy()
+    if pv_all.empty:
+        st.info("No hay mediciones Ping suficientes con los filtros actuales para construir las figuras comparativas.")
+    else:
+        st.markdown("#### 1) Alcanzabilidad ICMP por sonda y servicio")
+        reach = (
+            pv_all.groupby(["sonda_nombre", "sitio_web"])["alcanzable_icmp"]
+            .mean()
+            .mul(100)
+            .unstack()
+            .reindex(index=PROBE_ORDER, columns=SERVICE_ORDER)
+        )
+        reach.columns = [short_service_name(c) for c in reach.columns]
+        fig = px.imshow(
+            reach,
+            text_auto=".1f",
+            aspect="auto",
+            labels={"x": "Servicio", "y": "Sonda / proveedor", "color": "Alcanzabilidad (%)"},
+            color_continuous_scale=HEATMAP_SCALE_GOOD,
+            zmin=0,
+            zmax=100,
+            height=500,
+        )
+        fig.update_traces(texttemplate="%{z:.1f}%%")
+        st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_01_Alcanzabilidad_Sonda_Servicio"))
+        st.caption("Escala semántica: verde = bien / mejor alcanzabilidad; rojo = peor alcanzabilidad.")
+
+        st.markdown("#### 2) Alcanzabilidad ICMP por franja")
+        fr = (
+            pv_all.groupby(["sitio_web", "franja"])["alcanzable_icmp"]
+            .mean()
+            .mul(100)
+            .unstack()
+            .reindex(SERVICE_ORDER)
+        )
+        fr.index = [short_service_name(i) for i in fr.index]
+        fr = fr[[c for c in ["Matutina (~10:00)", "Nocturna (~22:00)"] if c in fr.columns]]
+        fr_long = fr.reset_index().rename(columns={"index": "Servicio"}).melt(id_vars="Servicio", var_name="Franja", value_name="Alcanzabilidad (%)")
+        fig = px.bar(
+            fr_long,
+            x="Servicio",
+            y="Alcanzabilidad (%)",
+            color="Franja",
+            barmode="group",
+            text_auto=".1f",
+            color_discrete_map=FRANJA_COLOR_MAP,
+            title="Alcanzabilidad por servicio y franja de observación",
+        )
+        fig.update_layout(height=480)
+        st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_02_Alcanzabilidad_Matutina_Nocturna"))
+
+        st.markdown("#### 3) Estado conjunto de las sesiones")
+        sess = (
+            pv_all.groupby(["sitio_web", "fecha", "franja"])
+            .agg(sondas_con_medicion=("sonda_id", "nunique"),
+                 sondas_con_respuesta=("alcanzable_icmp", "sum"))
+            .reset_index()
+        )
+        sess["estado"] = np.select(
+            [
+                sess["sondas_con_respuesta"].eq(0),
+                sess["sondas_con_respuesta"].eq(sess["sondas_con_medicion"]),
+            ],
+            ["Ninguna", "Todas"],
+            default="Parcial",
+        )
+        sess_counts = (
+            sess.groupby(["sitio_web", "estado"]).size().unstack(fill_value=0)
+            .reindex(index=SERVICE_ORDER, columns=["Todas", "Parcial", "Ninguna"], fill_value=0)
+        )
+        sess_counts.index = [short_service_name(i) for i in sess_counts.index]
+        sess_long = sess_counts.reset_index().rename(columns={"index": "Servicio"}).melt(id_vars="Servicio", var_name="Estado", value_name="Sesiones")
+        fig = px.bar(
+            sess_long,
+            x="Servicio",
+            y="Sesiones",
+            color="Estado",
+            barmode="stack",
+            text_auto=True,
+            color_discrete_map=SESSION_COLOR_MAP,
+            category_orders={"Estado": ["Todas", "Parcial", "Ninguna"]},
+            title="Sesiones fecha-franja con respuesta total, parcial o nula",
+        )
+        fig.update_layout(height=500)
+        st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_03_Estado_Conjunto_Sesiones"))
+        st.caption("“Todas” significa que respondieron todas las sondas con medición efectiva en esa sesión.")
+
+        st.markdown("#### 4) RTT mediano por sonda y servicio")
+        rtt = (
+            pv_all.dropna(subset=["rtt_exec_ms"])
+            .groupby(["sonda_nombre", "sitio_web"])["rtt_exec_ms"]
+            .median()
+            .reset_index()
+        )
+        rtt["Servicio"] = rtt["sitio_web"].map(short_service_name)
+        fig = px.scatter(
+            rtt,
+            x="rtt_exec_ms",
+            y="sonda_nombre",
+            color="Servicio",
+            symbol="Servicio",
+            labels={"rtt_exec_ms": "RTT mediano (ms)", "sonda_nombre": "Sonda / proveedor"},
+            category_orders={"sonda_nombre": PROBE_ORDER},
+            title="RTT mediano de ejecuciones con respuesta por sonda y servicio",
+        )
+        fig.update_layout(height=540)
+        st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_04_RTT_Mediano_Sonda_Servicio"))
+
+        st.markdown("#### 5) RTT mediano: nacional vs internacional")
+        pi = pv_all[(pv_all["sonda_nombre"] != "ULA (Mérida)") & pv_all["rtt_exec_ms"].notna()].copy()
+        if pi.empty:
+            st.info("No hay datos suficientes para comparar sondas nacionales e internacionales.")
+        else:
+            ni = pi.groupby(["sitio_web", "tipo_sonda"])["rtt_exec_ms"].median().reset_index()
+            ni["Servicio"] = ni["sitio_web"].map(short_service_name)
+            fig = px.bar(
+                ni,
+                x="Servicio",
+                y="rtt_exec_ms",
+                color="tipo_sonda",
+                barmode="group",
+                text_auto=".1f",
+                labels={"rtt_exec_ms": "RTT mediano (ms)", "tipo_sonda": "Grupo"},
+                title="Comparación del RTT mediano entre sondas nacionales externas e internacionales",
+            )
+            fig.update_layout(height=480)
+            st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_05_RTT_Nacional_Internacional"))
+            st.caption("La sonda ULA (Mérida) se excluye de este agregado por actuar como referencia local institucional.")
+
+        st.markdown("#### 6) Contexto 2026: antes, contingencia y después")
+        ev = resumen_eventos_ping(df_p)
+        ev_mov = ev[(ev["Sonda"] == "Movistar (Maracay)") & (ev["RTT mediano (ms)"].notna())].copy()
+        if not ev_mov.empty:
+            fig = px.bar(
+                ev_mov,
+                x="Servicio",
+                y="RTT mediano (ms)",
+                color="Periodo",
+                barmode="group",
+                text_auto=".1f",
+                color_discrete_map=PERIODO_COLOR_MAP,
+                title="Movistar → ULA: RTT mediano antes, durante y después de la contingencia de 2026",
+            )
+            fig.update_xaxes(ticktext=[short_service_name(s) for s in SERVICE_ORDER], tickvals=SERVICE_ORDER)
+            fig.update_layout(height=500)
+            st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_06_Evento_2026_Movistar"))
+            st.caption("Estas etapas son contextuales. La figura resume asociación temporal, no causalidad demostrada.")
+
+        st.markdown("#### 7) Resumen comparativo de OONI")
+        if not o_all.empty:
+            oo_sum = (
+                o_all.groupby("sitio_web")[["ok_count", "anomaly_count", "failure_count", "confirmed_count"]]
+                .sum().reindex(SERVICE_ORDER).reset_index()
+            )
+            oo_sum["Servicio"] = oo_sum["sitio_web"].map(short_service_name)
+            long_oo = oo_sum.melt(
+                id_vars="Servicio",
+                value_vars=["ok_count", "anomaly_count", "failure_count", "confirmed_count"],
+                var_name="Estado",
+                value_name="Mediciones",
+            )
+            long_oo["Estado"] = long_oo["Estado"].map({
+                "ok_count": "OK",
+                "anomaly_count": "Anomaly",
+                "failure_count": "Failure",
+                "confirmed_count": "Confirmed",
+            })
+            fig = px.bar(
+                long_oo,
+                x="Servicio",
+                y="Mediciones",
+                color="Estado",
+                barmode="stack",
+                text_auto=True,
+                color_discrete_map=OONI_COLOR_MAP,
+                category_orders={"Estado": ["OK", "Anomaly", "Failure", "Confirmed"]},
+                title="Resultados agregados de OONI Web Connectivity por servicio",
+            )
+            fig.update_layout(height=500)
+            st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_07_OONI_Comparativo"))
+            st.caption("Semántica visual: OK en verde; Failure en rojo; Confirmed en rojo oscuro.")
+
+        st.markdown("#### 8) Alcanzabilidad del destino mediante Traceroute")
+        if not t_all.empty:
+            tr = (
+                t_all.groupby("sitio_web")["respondio_destino"].mean().mul(100).reindex(SERVICE_ORDER).reset_index()
+            )
+            tr["Servicio"] = tr["sitio_web"].map(short_service_name)
+            fig = px.bar(
+                tr,
+                x="Servicio",
+                y="respondio_destino",
+                text_auto=".2f",
+                labels={"respondio_destino": "Traceroutes que alcanzaron la IP destino (%)"},
+                color="respondio_destino",
+                color_continuous_scale=HEATMAP_SCALE_GOOD,
+                range_color=[0, 100],
+                title="Alcanzabilidad del destino mediante Traceroute",
+            )
+            fig.update_layout(height=460, coloraxis_showscale=False)
+            st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_08_Alcanzabilidad_Traceroute"))
+
+    st.info(
+        "Estas figuras se incorporaron para apoyar la selección del paquete visual definitivo del Capítulo IV. "
+        "Los gráficos individuales por servicio se mantienen en las demás pestañas para exploración detallada."
+    )
+
 
 # -----------------------------------------------------------------------------
 # TAB 7 - COBERTURA
@@ -1348,6 +1643,7 @@ with tab_raw:
             ["10", "Sankey ASN / IXP", "Rutas / ASN"],
             ["11", "Rutas de entrada", "Rutas / ASN"],
             ["12", "OONI", "OONI"],
+            ["13", "Comparativo Cap. IV", "Comparativo Cap. IV"],
         ],
         columns=["N.º", "Evidencia", "Pestaña"],
     )
