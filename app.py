@@ -1,4 +1,4 @@
-"""Dashboard V3.6 de telemetría para la tesis ULA.
+"""Dashboard V3.6.1 de telemetría para la tesis ULA.
 
 Objetivo de V3
 --------------
@@ -125,12 +125,12 @@ def plotly_config(nombre: str) -> dict:
     }
 
 st.set_page_config(
-    page_title="Telemetría ULA — Dashboard V3.6",
+    page_title="Telemetría ULA — Dashboard V3.6.1",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("📊 Telemetría de conectividad hacia servicios ULA — V3.6")
+st.title("📊 Telemetría de conectividad hacia servicios ULA — V3.6.1")
 st.caption(
     "RIPE Atlas (Ping/Traceroute) + OONI · Hora local America/Caracas · "
     "Visualización exploratoria basada en el pipeline metodológico V3"
@@ -342,7 +342,14 @@ def resumen_eventos_ping(df: pd.DataFrame) -> pd.DataFrame:
                 "N mediciones": int(len(grp)),
                 "N válidas": int(len(valid)),
                 "Alcanzabilidad (%)": pct(int(valid["alcanzable_icmp"].astype(bool).sum()), len(valid)),
-                "Pérdida media (%)": pd.to_numeric(valid["packet_loss_pct"], errors="coerce").mean(),
+                "Pérdida agregada (%)": (
+                    pct(
+                        pd.to_numeric(valid["sent"], errors="coerce").fillna(0).sum()
+                        - pd.to_numeric(valid["rcvd"], errors="coerce").fillna(0).sum(),
+                        pd.to_numeric(valid["sent"], errors="coerce").fillna(0).sum(),
+                    )
+                    if len(valid) else np.nan
+                ),
                 "RTT mediano (ms)": rtt.median() if not rtt.empty else np.nan,
                 "RTT P95 (ms)": rtt.quantile(0.95) if not rtt.empty else np.nan,
             }
@@ -1032,7 +1039,7 @@ with tab_rtt:
                 ev_serv = ev[ev["Servicio"] == servicio].copy()
                 cols_show = [
                     "Sonda", "Periodo", "N mediciones", "N válidas",
-                    "Alcanzabilidad (%)", "Pérdida media (%)",
+                    "Alcanzabilidad (%)", "Pérdida agregada (%)",
                     "RTT mediano (ms)", "RTT P95 (ms)"
                 ]
                 st.dataframe(
@@ -1424,7 +1431,7 @@ with tab_comp:
         )
         fig.update_traces(texttemplate="%{z:.1f}%%")
         st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_01_Alcanzabilidad_Sonda_Servicio"))
-        st.caption("Escala semántica: verde = bien / mejor alcanzabilidad; rojo = peor alcanzabilidad.")
+        st.caption("Escala semántica: verde = mayor alcanzabilidad; rojo = menor alcanzabilidad. Los tamaños de muestra varían por sonda debido a la cobertura efectiva.")
 
         st.markdown("#### 2) Alcanzabilidad ICMP por franja")
         fr = (
@@ -1444,7 +1451,6 @@ with tab_comp:
             color="Franja",
             barmode="group",
             text_auto=".1f",
-            color_discrete_map=FRANJA_COLOR_MAP,
             title="Alcanzabilidad por servicio y franja de observación",
         )
         fig.update_layout(height=480)
@@ -1526,7 +1532,7 @@ with tab_comp:
             )
             fig.update_layout(height=480)
             st.plotly_chart(fig, use_container_width=True, config=plotly_config("Global_05_RTT_Nacional_Internacional"))
-            st.caption("La sonda ULA (Mérida) se excluye de este agregado por actuar como referencia local institucional.")
+            st.caption("La sonda ULA (Mérida) se excluye de este agregado por actuar como referencia local institucional. El RTT se calcula solo sobre ejecuciones que obtuvieron respuesta; por ello esta figura debe interpretarse junto con la alcanzabilidad.")
 
         st.markdown("#### 6) Contexto 2026: antes, contingencia y después")
         ev = resumen_eventos_ping(df_p)
@@ -1539,7 +1545,6 @@ with tab_comp:
                 color="Periodo",
                 barmode="group",
                 text_auto=".1f",
-                color_discrete_map=PERIODO_COLOR_MAP,
                 title="Movistar → ULA: RTT mediano antes, durante y después de la contingencia de 2026",
             )
             fig.update_xaxes(ticktext=[short_service_name(s) for s in SERVICE_ORDER], tickvals=SERVICE_ORDER)
