@@ -1,4 +1,4 @@
-"""Dashboard V3.4.1.1 de telemetría para la tesis ULA.
+"""Dashboard V3.5 de telemetría para la tesis ULA.
 
 Objetivo de V3
 --------------
@@ -21,6 +21,7 @@ from collections import Counter
 from pathlib import Path
 import gzip
 import io
+import ipaddress
 import re
 import zipfile
 
@@ -31,6 +32,24 @@ import plotly.graph_objects as go
 import streamlit as st
 
 OUT_CANDIDATES = [Path("salidas_tesis_v3"), Path("salidas_tesis")]
+
+# Hitos externos documentados. Se usan exclusivamente como contexto temporal;
+# la app NO atribuye causalidad a estos eventos.
+SISMO_VE_2026 = pd.Timestamp("2026-06-24 18:04:31")
+# Cirion comunicó la reconexión total el 23-Jul; al no publicarse aquí una hora
+# operativa exacta, el período posterior comienza el 24-Jul a las 00:00.
+RECONEXION_CABLE_FECHA = pd.Timestamp("2026-07-23 12:00:00")
+INICIO_POST_RECONEXION = pd.Timestamp("2026-07-24 00:00:00")
+
+EVENT_SOURCE_USGS = "https://www.usgs.gov/programs/landslide-hazards/science/2026-venezuela-sequence-earthquake-triggered-landslide-hazards"
+EVENT_SOURCE_CIRION = "https://press.ciriontechnologies.com/2026/07/23/venezuela-vuelve-conectada-mundo/"
+
+# Algunos LAN de IXP no poseen un ASN atribuible por IP. Si se eliminan por
+# completo del flujo ASN, se oculta información topológica relevante.
+IXP_NETWORKS = [
+    (ipaddress.ip_network("206.41.108.0/24"), "IXP · FL-IX (Miami)"),
+    (ipaddress.ip_network("206.223.124.0/24"), "IXP · NAP Colombia (Bogotá)"),
+]
 
 def _slug_archivo(valor: str) -> str:
     """Nombre seguro y legible para descargas de figuras."""
@@ -59,12 +78,12 @@ def plotly_config(nombre: str) -> dict:
     }
 
 st.set_page_config(
-    page_title="Telemetría ULA — Dashboard V3.4.1",
+    page_title="Telemetría ULA — Dashboard V3.5",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("📊 Telemetría de conectividad hacia servicios ULA — V3.4.1")
+st.title("📊 Telemetría de conectividad hacia servicios ULA — V3.5")
 st.caption(
     "RIPE Atlas (Ping/Traceroute) + OONI · Hora local America/Caracas · "
     "Visualización exploratoria basada en el pipeline metodológico V3"
@@ -235,6 +254,91 @@ def resumen_sondas_ping(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["Grupo", "RTT mediano (ms)"], na_position="last")
 
 
+def periodo_contextual_2026(timestamp) -> str:
+    """Clasificación temporal descriptiva para el evento sísmico/cable de 2026."""
+    ts = pd.to_datetime(timestamp, errors="coerce")
+    if pd.isna(ts):
+        return "Sin fecha"
+    if ts < SISMO_VE_2026:
+        return "Antes del sismo"
+    if ts < INICIO_POST_RECONEXION:
+        return "Contingencia (24-Jun a 23-Jul)"
+    return "Después de la reconexión"
+
+
+def resumen_eventos_ping(df: pd.DataFrame) -> pd.DataFrame:
+    """RTT/alcanzabilidad antes, durante y después del período contextual."""
+    if df.empty:
+        return pd.DataFrame()
+    work = df.copy()
+    work["Periodo contextual"] = work["timestamp"].map(periodo_contextual_2026)
+    rows = []
+    orden = [
+        "Antes del sismo",
+        "Contingencia (24-Jun a 23-Jul)",
+        "Después de la reconexión",
+    ]
+    for (serv, sonda, periodo), grp in work.groupby(
+        ["sitio_web", "sonda_nombre", "Periodo contextual"], dropna=False
+    ):
+        valid = grp[grp["sent"] > 0].copy()
+        rtt = pd.to_numeric(valid["rtt_exec_ms"], errors="coerce").dropna()
+        rows.append(
+            {
+                "Servicio": serv,
+                "Sonda": sonda,
+                "Periodo": periodo,
+                "N mediciones": int(len(grp)),
+                "N válidas": int(len(valid)),
+                "Alcanzabilidad (%)": pct(int(valid["alcanzable_icmp"].astype(bool).sum()), len(valid)),
+                "Pérdida media (%)": pd.to_numeric(valid["packet_loss_pct"], errors="coerce").mean(),
+                "RTT mediano (ms)": rtt.median() if not rtt.empty else np.nan,
+                "RTT P95 (ms)": rtt.quantile(0.95) if not rtt.empty else np.nan,
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["_orden"] = pd.Categorical(out["Periodo"], categories=orden, ordered=True)
+    return out.sort_values(["Servicio", "Sonda", "_orden"]).drop(columns="_orden")
+
+
+def _token_ixp(ip_value) -> str | None:
+    if ip_value is None or (isinstance(ip_value, float) and np.isnan(ip_value)):
+        return None
+    try:
+        addr = ipaddress.ip_address(str(ip_value).strip())
+    except ValueError:
+        return None
+    for network, label in IXP_NETWORKS:
+        if addr in network:
+            return label
+    return None
+
+
+def _anotar_eventos_contextuales(fig):
+    """Añade hitos documentados sin convertirlos en explicación causal."""
+    # add_shape evita algunos problemas de add_vline con timestamps + annotations.
+    eventos = [
+        (SISMO_VE_2026, "24-Jun · Sismos Mw 7,2/7,5", "dash"),
+        (RECONEXION_CABLE_FECHA, "23-Jul · Reconexión reportada", "dot"),
+    ]
+    for x, label, dash in eventos:
+        fig.add_shape(
+            type="line",
+            x0=x, x1=x, y0=0, y1=1,
+            xref="x", yref="paper",
+            line=dict(width=2, dash=dash),
+        )
+        fig.add_annotation(
+            x=x, y=1.0, xref="x", yref="paper",
+            text=label, showarrow=False,
+            xanchor="left", yanchor="bottom",
+            textangle=-90, font=dict(size=10),
+        )
+    return fig
+
+
 def _normalizar_asn(valor) -> str | None:
     if valor is None or (isinstance(valor, float) and np.isnan(valor)):
         return None
@@ -306,25 +410,33 @@ def mapa_nombres_asn(df_hops: pd.DataFrame) -> dict[str, str]:
 
 
 def secuencias_asn_por_trace(df_hops: pd.DataFrame) -> dict[str, list[str]]:
-    if df_hops.empty or "asn_hop" not in df_hops.columns:
+    """Secuencia de nodos atribuibles por traza.
+
+    Prioriza un marcador IXP conocido cuando la IP pertenece a un LAN de
+    intercambio, incluso si esa IP no tiene ASN atribuible. En el resto de TTL
+    utiliza el ASN modal, manteniendo el detalle intento-a-intento intacto.
+    """
+    if df_hops.empty:
         return {}
     work = df_hops[df_hops["hop_especial_255"].astype(str).str.lower() != "true"].copy()
     if work.empty:
         return {}
-    work["asn_norm"] = work["asn_hop"].map(_normalizar_asn)
-    work = work[work["asn_norm"].notna()]
+    work["asn_norm"] = work["asn_hop"].map(_normalizar_asn) if "asn_hop" in work.columns else None
+    work["ixp_token"] = work["ip_hop"].map(_token_ixp) if "ip_hop" in work.columns else None
     out: dict[str, list[str]] = {}
     for trace_id, grp in work.groupby("trace_id"):
         seq: list[str] = []
         for _, hg in grp.groupby("hop_num", sort=True):
-            vals = hg["asn_norm"].dropna().astype(str)
-            if vals.empty:
-                continue
-            # Si un TTL devolvió más de un ASN, usamos el modal solo para la
-            # representación de flujo; el detalle intento-a-intento sigue intacto.
-            asn = vals.mode().iloc[0]
-            if not seq or seq[-1] != asn:
-                seq.append(asn)
+            ixps = hg["ixp_token"].dropna().astype(str)
+            if not ixps.empty:
+                token = ixps.mode().iloc[0]
+            else:
+                vals = hg["asn_norm"].dropna().astype(str)
+                if vals.empty:
+                    continue
+                token = vals.mode().iloc[0]
+            if not seq or seq[-1] != token:
+                seq.append(token)
         out[str(trace_id)] = seq
     return out
 
@@ -357,13 +469,17 @@ def construir_paths_asn(
         path = _compactar_path([origin] + seq)
         if not path:
             continue
+        reached = bool(row["respondio_destino"])
+        terminal = f"Destino · {servicio}" if reached else "Traza incompleta · último punto observado"
         rows.append(
             {
                 "trace_id": row["trace_id"],
                 "sonda_nombre": row["sonda_nombre"],
-                "respondio_destino": bool(row["respondio_destino"]),
+                "respondio_destino": reached,
+                "estado_traza": "Destino alcanzado" if reached else "Traza incompleta",
                 "path_tokens": path,
                 "firma_asn_limpia": " > ".join(path),
+                "firma_visual": " > ".join(path + [terminal]),
             }
         )
     return pd.DataFrame(rows)
@@ -376,22 +492,33 @@ def sankey_asn_limpio(
     sondas: list[str],
     top_paths: int = 8,
 ):
+    """Sankey de rutas observadas sin fingir llegada al destino.
+
+    Las trazas completas terminan en el destino. Las incompletas terminan en un
+    nodo explícito de último punto observado. Los LAN de IXP conocidos se
+    conservan aunque no tengan ASN atribuible.
+    """
     paths = construir_paths_asn(df_traces, df_hops, servicio, sondas)
     if paths.empty:
         return None, pd.DataFrame(), pd.DataFrame()
 
     counts = (
-        paths.groupby("firma_asn_limpia")
+        paths.groupby(["firma_visual", "estado_traza"], dropna=False)
         .size()
         .reset_index(name="trazas")
         .sort_values("trazas", ascending=False)
     )
-    selected = counts.head(max(1, top_paths))["firma_asn_limpia"]
-    paths_top = paths[paths["firma_asn_limpia"].isin(selected)].copy()
+    selected = counts.head(max(1, top_paths))["firma_visual"]
+    paths_top = paths[paths["firma_visual"].isin(selected)].copy()
 
     edges: list[tuple[str, str]] = []
-    for path in paths_top["path_tokens"]:
-        full = path + [f"Destino · {servicio}"]
+    for _, prow in paths_top.iterrows():
+        terminal = (
+            f"Destino · {servicio}"
+            if bool(prow["respondio_destino"])
+            else "Traza incompleta · último punto observado"
+        )
+        full = prow["path_tokens"] + [terminal]
         edges.extend(zip(full[:-1], full[1:]))
     if not edges:
         return None, counts, pd.DataFrame()
@@ -411,10 +538,7 @@ def sankey_asn_limpio(
         go.Sankey(
             arrangement="snap",
             node=dict(
-                pad=18,
-                thickness=18,
-                label=labels,
-                customdata=nodes_raw,
+                pad=18, thickness=18, label=labels, customdata=nodes_raw,
                 hovertemplate="%{label}<br>%{customdata}<extra></extra>",
             ),
             link=dict(
@@ -427,9 +551,12 @@ def sankey_asn_limpio(
         )
     )
     fig.update_layout(
-        title=f"Rutas ASN más frecuentes hacia {servicio} · ancho = número de traceroutes",
+        title=(
+            f"Rutas ASN/IXP más frecuentes hacia {servicio} · "
+            "trazas incompletas separadas del destino"
+        ),
         height=max(620, 40 * len(nodes_raw)),
-        margin=dict(l=20, r=20, t=70, b=20),
+        margin=dict(l=20, r=20, t=80, b=20),
         font=dict(size=11),
     )
     return fig, counts, e
@@ -441,29 +568,31 @@ def rutas_entrada_df(
     servicio: str,
     sondas: list[str],
 ) -> tuple[pd.DataFrame, int]:
-    paths = construir_paths_asn(df_traces, df_hops, servicio, sondas)
-    if paths.empty:
+    """Rutas de entrada calculadas SOLO sobre traceroutes que alcanzaron destino."""
+    paths_all = construir_paths_asn(df_traces, df_hops, servicio, sondas)
+    if paths_all.empty:
         return pd.DataFrame(), 0
+    incompletas = int((~paths_all["respondio_destino"].astype(bool)).sum())
+    paths = paths_all[paths_all["respondio_destino"].astype(bool)].copy()
+    if paths.empty:
+        return pd.DataFrame(), incompletas
+
     rows = []
-    omitidas = 0
-    tr_idx = df_traces.set_index("trace_id")
+    omitidas = incompletas
     for _, row in paths.iterrows():
         seq = row["path_tokens"]
         if len(seq) < 2:
             omitidas += 1
             continue
-        # El origen ya es seq[0]. Tomamos los últimos ASN atribuibles de la
-        # secuencia, saltando repeticiones consecutivas previamente compactadas.
         ultimo = seq[-1]
-        penultimo = seq[-2] if len(seq) >= 2 else None
-        trace = tr_idx.loc[row["trace_id"]]
+        penultimo = seq[-2]
         rows.append(
             {
                 "Sonda": row["sonda_nombre"],
                 "ASN origen": seq[0],
-                "Penúltimo ASN atribuible": penultimo,
-                "Último ASN atribuible": ultimo,
-                "Destino alcanzado": bool(trace["respondio_destino"]),
+                "Penúltimo nodo atribuible": penultimo,
+                "Último nodo atribuible": ultimo,
+                "Destino alcanzado": True,
             }
         )
     if not rows:
@@ -471,7 +600,10 @@ def rutas_entrada_df(
     detail = pd.DataFrame(rows)
     grouped = (
         detail.groupby(
-            ["Sonda", "ASN origen", "Penúltimo ASN atribuible", "Último ASN atribuible"],
+            [
+                "Sonda", "ASN origen", "Penúltimo nodo atribuible",
+                "Último nodo atribuible", "Destino alcanzado"
+            ],
             dropna=False,
         )
         .size()
@@ -489,16 +621,25 @@ def sankey_rutas_entrada(
 ):
     if rutas.empty:
         return None
-    work = rutas.head(top_rows).copy()
+    # Por construcción todas estas filas corresponden a destino alcanzado.
+    work = rutas[rutas["Destino alcanzado"].astype(bool)].head(top_rows).copy()
+    if work.empty:
+        return None
     name_map = mapa_nombres_asn(df_hops)
     edges = []
     for _, r in work.iterrows():
         sonda = f"Origen · {r['Sonda']}"
-        pen = name_map.get(r["Penúltimo ASN atribuible"], r["Penúltimo ASN atribuible"])
-        ult = name_map.get(r["Último ASN atribuible"], r["Último ASN atribuible"])
-        dest = f"Destino · {servicio}"
+        pen_raw = r["Penúltimo nodo atribuible"]
+        ult_raw = r["Último nodo atribuible"]
+        pen = name_map.get(pen_raw, pen_raw)
+        ult = name_map.get(ult_raw, ult_raw)
+        dest = f"Destino alcanzado · {servicio}"
         val = int(r["Traceroutes"])
-        edges.extend([(sonda, f"Penúltimo · {pen}", val), (f"Penúltimo · {pen}", f"Último · {ult}", val), (f"Último · {ult}", dest, val)])
+        edges.extend([
+            (sonda, f"Penúltimo · {pen}", val),
+            (f"Penúltimo · {pen}", f"Último · {ult}", val),
+            (f"Último · {ult}", dest, val),
+        ])
     e = pd.DataFrame(edges, columns=["source", "target", "value"])
     e = e.groupby(["source", "target"], as_index=False)["value"].sum()
     nodes = list(dict.fromkeys(e["source"].tolist() + e["target"].tolist()))
@@ -516,9 +657,9 @@ def sankey_rutas_entrada(
         )
     )
     fig.update_layout(
-        title=f"Rutas de entrada observadas hacia {servicio} · ancho = frecuencia",
+        title=f"Rutas de entrada completadas hacia {servicio} · ancho = frecuencia",
         height=max(600, 35 * len(nodes)),
-        margin=dict(l=20, r=20, t=70, b=20),
+        margin=dict(l=20, r=20, t=75, b=20),
         font=dict(size=11),
     )
     return fig
@@ -801,10 +942,54 @@ with tab_rtt:
                 ]
             )
         )
+        mostrar_hitos = st.checkbox(
+            "Mostrar hitos externos documentados del 24-Jun y 23-Jul", value=True
+        )
+        if mostrar_hitos:
+            _anotar_eventos_contextuales(fig)
         st.plotly_chart(fig, use_container_width=True, config=plotly_config(f"{servicio}_02_Serie_temporal_RTT"))
         st.caption(
-            "No se muestran anotaciones causales de eventos externos. Cualquier evento futuro deberá estar documentado con una fuente temporal independiente."
+            "Las líneas verticales, cuando están activas, son referencias temporales documentadas y NO implican causalidad. "
+            "24-Jun: secuencia sísmica; 23-Jul: Cirion comunicó la reconexión total del cable afectado."
         )
+
+        with st.expander("🌎 Análisis contextual: antes · contingencia · después", expanded=False):
+            st.markdown(
+                f"Fuentes externas: [USGS — sismos del 24-Jun]({EVENT_SOURCE_USGS}) · "
+                f"[Cirion — reconexión reportada el 23-Jul]({EVENT_SOURCE_CIRION}). "
+                "La comparación es descriptiva y no atribuye los cambios de RTT o alcanzabilidad al evento."
+            )
+            ev = resumen_eventos_ping(p)
+            if ev.empty:
+                st.info("No hay datos suficientes para este análisis contextual.")
+            else:
+                ev_serv = ev[ev["Servicio"] == servicio].copy()
+                cols_show = [
+                    "Sonda", "Periodo", "N mediciones", "N válidas",
+                    "Alcanzabilidad (%)", "Pérdida media (%)",
+                    "RTT mediano (ms)", "RTT P95 (ms)"
+                ]
+                st.dataframe(
+                    ev_serv[cols_show].round(2), use_container_width=True, hide_index=True
+                )
+                ev_rtt = ev_serv[ev_serv["RTT mediano (ms)"].notna()].copy()
+                if not ev_rtt.empty:
+                    fig_ev = px.bar(
+                        ev_rtt, x="Sonda", y="RTT mediano (ms)", color="Periodo",
+                        barmode="group", text_auto=".1f",
+                        title=f"RTT mediano antes, durante y después de la contingencia · {servicio}",
+                    )
+                    fig_ev.update_layout(height=520, xaxis_tickangle=-35)
+                    st.plotly_chart(
+                        fig_ev, use_container_width=True,
+                        config=plotly_config(f"{servicio}_Evento_2026_RTT_antes_durante_despues")
+                    )
+                st.download_button(
+                    "⬇️ Descargar tabla del análisis contextual de este servicio",
+                    data=ev_serv[cols_show].to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"{_slug_archivo(servicio)}_evento_2026_antes_contingencia_despues.csv",
+                    mime="text/csv",
+                )
 
         st.subheader("🔥 Mapa de calor diario por sonda")
         heat_stat = st.radio("Estadístico del mapa", ["Mediana", "Media", "P95"], horizontal=True)
@@ -985,7 +1170,7 @@ with tab_rutas:
             )
 
     st.markdown("---")
-    st.subheader("🌊 Sankey de rutas ASN")
+    st.subheader("🌊 Sankey de rutas ASN / IXP")
     asn_available = "asn_hop" in h.columns and h["asn_hop"].map(_normalizar_asn).notna().any()
     if not asn_available:
         st.warning(
@@ -997,7 +1182,7 @@ with tab_rutas:
         if fig is not None:
             st.plotly_chart(fig, use_container_width=True, config=plotly_config(f"{servicio}_10_Sankey_ASN"))
             st.caption(
-                "El ancho representa frecuencia de traceroutes. No representa RTT ni volumen real de tráfico. Las etiquetas ASN se normalizan para evitar objetos/diccionarios ilegibles."
+                "El ancho representa frecuencia de traceroutes. Las trazas incompletas terminan en un nodo separado y nunca se dibujan como si hubieran alcanzado el destino. Los LAN de IXP conocidos se conservan aunque no tengan ASN."
             )
             with st.expander("Ver firmas ASN más frecuentes"):
                 st.dataframe(paths_counts.head(30), use_container_width=True, hide_index=True)
@@ -1013,21 +1198,21 @@ with tab_rutas:
             if fig is not None:
                 st.plotly_chart(fig, use_container_width=True, config=plotly_config(f"{servicio}_11_Rutas_de_entrada"))
             st.caption(
-                "'Penúltimo' y 'último' se refieren a los últimos ASN atribuibles observados antes del destino; no representan necesariamente puntos físicos de entrada. "
+                "'Penúltimo' y 'último' se refieren a los últimos nodos atribuibles (ASN o IXP) observados en traceroutes que SÍ alcanzaron el destino; no representan necesariamente puntos físicos de entrada. "
                 f"Trazas sin secuencia ASN suficiente omitidas de esta visualización: {omitidas}."
             )
             st.dataframe(rutas.head(40), use_container_width=True, hide_index=True)
 
             # Resumen simple del último ASN para facilitar interpretación.
-            ult = rutas.groupby("Último ASN atribuible", as_index=False)["Traceroutes"].sum().sort_values("Traceroutes", ascending=False)
+            ult = rutas.groupby("Último nodo atribuible", as_index=False)["Traceroutes"].sum().sort_values("Traceroutes", ascending=False)
             name_map = mapa_nombres_asn(h)
-            ult["ASN / organización"] = ult["Último ASN atribuible"].map(lambda x: name_map.get(x, x))
+            ult["Nodo / organización"] = ult["Último nodo atribuible"].map(lambda x: name_map.get(x, x))
             fig = px.bar(
                 ult.head(15),
-                x="ASN / organización",
+                x="Nodo / organización",
                 y="Traceroutes",
                 text_auto=True,
-                title="Últimos ASN atribuibles más frecuentes antes del destino",
+                title="Últimos nodos atribuibles más frecuentes antes del destino",
             )
             fig.update_layout(height=470, xaxis_tickangle=-35)
             st.plotly_chart(fig, use_container_width=True, config=plotly_config(f"{servicio}_11_Ultimos_ASN_antes_destino"))
@@ -1160,7 +1345,7 @@ with tab_raw:
             ["07", "Destino alcanzado y saltos", "Traceroute"],
             ["08", "Rutas IP dominantes", "Rutas / ASN"],
             ["09", "Perfil salto-a-salto de ruta dominante", "Rutas / ASN"],
-            ["10", "Sankey ASN", "Rutas / ASN"],
+            ["10", "Sankey ASN / IXP", "Rutas / ASN"],
             ["11", "Rutas de entrada", "Rutas / ASN"],
             ["12", "OONI", "OONI"],
         ],
@@ -1171,6 +1356,21 @@ with tab_raw:
         "Las tablas 01 y 08 pueden capturarse con la herramienta de captura del sistema "
         "o descargarse como datos. Los gráficos 02–12 usan el icono de cámara de Plotly."
     )
+
+    st.markdown("### 🌎 Tabla global de hitos 2026")
+    ev_global = resumen_eventos_ping(df_p)
+    if not ev_global.empty:
+        st.download_button(
+            "⬇️ Descargar análisis global antes · contingencia · después",
+            data=ev_global.to_csv(index=False).encode("utf-8-sig"),
+            file_name="analisis_eventos_2026_todos_los_servicios.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        st.caption(
+            "Períodos: antes del 24-Jun 18:04; contingencia desde ese momento hasta el 23-Jul; "
+            "posterior desde el 24-Jul. Los resultados son descriptivos, no causales."
+        )
 
     st.markdown("### 📦 Paquete de datos para el Capítulo IV")
     st.write(
