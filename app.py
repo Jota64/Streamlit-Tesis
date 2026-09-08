@@ -119,8 +119,19 @@ st.markdown(
 
 def plotly_config() -> dict:
     if MODO_JURADO:
-        return {"displaylogo": False, "displayModeBar": False, "scrollZoom": False}
-    return {"displaylogo": False, "displayModeBar": True, "scrollZoom": False}
+        return {"displaylogo": False, "displayModeBar": False, "scrollZoom": False, "responsive": True}
+    return {"displaylogo": False, "displayModeBar": True, "scrollZoom": False, "responsive": True}
+
+
+def sankey_config() -> dict:
+    """Mantiene hover y arrastre de nodos sin exponer controles innecesarios."""
+    return {
+        "displaylogo": False,
+        "displayModeBar": False,
+        "scrollZoom": False,
+        "responsive": True,
+        "staticPlot": False,
+    }
 
 
 def _buscar_out_dir() -> Path:
@@ -713,9 +724,25 @@ with tab_rutas:
         c2.metric("Destino alcanzado", f"{n_reached:,}")
         c3.metric("Alcanzabilidad Traceroute", fmt_num(pct(n_reached, len(t_route)), 2, "%"))
 
-        fig = sankey_asn_limpio(t_serv, h_serv, servicio, [origen_ruta], top_paths=8)
+        st.markdown("### Sankey interactivo de rutas ASN/IXP")
+        c_sankey, c_help = st.columns([1, 2])
+        with c_sankey:
+            top_paths = st.selectbox(
+                "Rutas principales a mostrar",
+                [5, 8, 12],
+                index=1,
+                key="top_paths_jurado",
+                help="Solo cambia cuántas familias de ruta frecuentes se muestran; no modifica los datos.",
+            )
+        with c_help:
+            st.info(
+                "El Sankey es interactivo: puede pasar el cursor sobre nodos y enlaces para ver detalle "
+                "y arrastrar los nodos para reorganizar temporalmente la vista."
+            )
+
+        fig = sankey_asn_limpio(t_serv, h_serv, servicio, [origen_ruta], top_paths=top_paths)
         if fig is not None:
-            st.plotly_chart(fig, use_container_width=True, config=plotly_config())
+            st.plotly_chart(fig, use_container_width=True, config=sankey_config())
             st.caption(
                 "El ancho representa frecuencia de traceroutes, no RTT ni volumen real de tráfico. "
                 "Las trazas incompletas terminan en un nodo separado; hop=255 no se interpreta como 255 saltos. "
