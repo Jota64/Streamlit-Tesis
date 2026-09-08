@@ -1,9 +1,8 @@
-"""Portal de presentación para la defensa del Trabajo de Grado ULA.
+"""Portal de revisión para tutores del Trabajo de Grado ULA.
 
-Esta interfaz presenta exclusivamente los análisis directamente alineados con
-los objetivos, resultados y limitaciones descritos en la tesis. Utiliza el
-mismo corpus procesado de la campaña experimental; no realiza mediciones en
-tiempo real ni constituye una fuente experimental independiente.
+Mantiene la narrativa principal de la tesis y añade una capa acotada de
+verificación técnica sobre los datos procesados. No incorpora análisis fuera
+del alcance del trabajo ni realiza mediciones en tiempo real.
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ import streamlit as st
 # -----------------------------------------------------------------------------
 # Configuración de presentación
 # -----------------------------------------------------------------------------
-MODO_JURADO = True
+MODO_JURADO = False
 
 OUT_CANDIDATES = [
     Path("cap4_data"),
@@ -97,7 +96,7 @@ OONI_COLOR_MAP = {
 }
 
 st.set_page_config(
-    page_title="Análisis de conectividad ULA",
+    page_title="Revisión técnica de conectividad ULA",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -747,14 +746,14 @@ except FileNotFoundError:
 # -----------------------------------------------------------------------------
 # Encabezado y navegación
 # -----------------------------------------------------------------------------
-st.title("Análisis de conectividad hacia servicios de la Universidad de Los Andes")
+st.title("Revisión de conectividad hacia servicios de la Universidad de Los Andes")
 st.caption(
-    "Herramienta interactiva de apoyo al Trabajo de Grado · RIPE Atlas Ping/Traceroute · "
-    "OONI Web Connectivity como evidencia complementaria · campaña junio–agosto de 2026"
+    "Versión para tutores · resultados de la tesis + verificación técnica acotada · "
+    "RIPE Atlas Ping/Traceroute · OONI Web Connectivity · campaña junio–agosto de 2026"
 )
 st.info(
-    "Esta aplicación presenta el corpus experimental cerrado utilizado en la tesis. "
-    "No realiza mediciones en tiempo real y no constituye una fuente experimental independiente."
+    "Esta aplicación utiliza el mismo corpus experimental cerrado de la tesis. La pestaña de verificación "
+    "permite revisar registros procesados y trazas concretas sin añadir variables, hipótesis o análisis fuera del alcance del trabajo."
 )
 
 servicios_disponibles = [s for s in SERVICE_ORDER if s in set(df_p["sitio_web"].dropna())]
@@ -776,7 +775,7 @@ nombres_tabs = [
     "Cobertura y metodología",
 ]
 if not MODO_JURADO:
-    nombres_tabs.append("Técnico")
+    nombres_tabs.append("Verificación técnica")
 tabs = st.tabs(nombres_tabs)
 tab_resumen, tab_desempeno, tab_rutas, tab_ooni, tab_metodo = tabs[:5]
 tab_tecnico = tabs[5] if not MODO_JURADO else None
@@ -850,7 +849,7 @@ with tab_desempeno:
     sonda_temporal = st.selectbox(
         "Serie temporal a visualizar",
         ["Todas las sondas"] + disponibles,
-        key="sonda_temporal_jurado",
+        key="sonda_temporal_tutores",
     )
     valid = p_serv[p_serv["rtt_exec_ms"].notna()].copy()
     if sonda_temporal != "Todas las sondas":
@@ -946,7 +945,7 @@ with tab_rutas:
         "Puntos de observación incluidos en las vistas globales",
         sondas_globales_disp,
         default=sondas_globales_disp,
-        key="sondas_globales_jurado",
+        key="sondas_globales_tutores",
         help="Por defecto se representa la campaña completa desde las nueve sondas. Puede desmarcar una sonda para facilitar una explicación puntual.",
     )
     servicios_globales = [s for s in SERVICE_ORDER if s in set(df_t["sitio_web"].dropna())]
@@ -1016,7 +1015,7 @@ with tab_rutas:
                 "Origen para visualizar en detalle",
                 disponibles_nat,
                 index=idx_default,
-                key="origen_ruta_jurado",
+                key="origen_ruta_tutores",
             )
             t_route = t_serv[t_serv["sonda_nombre"] == origen_ruta].copy()
             n_reached = int(t_route["respondio_destino"].astype(bool).sum()) if len(t_route) else 0
@@ -1029,7 +1028,7 @@ with tab_rutas:
                 "Familias más frecuentes a mostrar en el detalle",
                 [5, 8, 12],
                 index=1,
-                key="top_paths_jurado",
+                key="top_paths_tutores",
             )
             fig = sankey_asn_limpio(t_serv, h_serv, servicio, [origen_ruta], top_paths=top_paths)
             if fig is not None:
@@ -1150,37 +1149,147 @@ with tab_metodo:
     st.dataframe(criterios, use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
-# Modo técnico opcional, oculto por defecto
+# 6. VERIFICACIÓN TÉCNICA PARA TUTORES
 # -----------------------------------------------------------------------------
 if tab_tecnico is not None:
     with tab_tecnico:
-        st.subheader("Inspección técnica interna")
-        st.warning("Esta sección está desactivada en el modo de presentación para tutores y jurados.")
-        st.write("Ping procesado")
-        st.dataframe(p_serv, use_container_width=True, hide_index=True)
-        st.write("Traceroute procesado")
-        st.dataframe(t_serv, use_container_width=True, hide_index=True)
+        st.subheader("Verificación técnica de los datos procesados")
+        st.caption(
+            "Esta sección permite comprobar cómo se obtienen los indicadores mostrados en la tesis. "
+            "Se limita a los mismos datos y variables definidos en la metodología; no incorpora análisis exploratorios adicionales."
+        )
 
-        if not t_serv.empty:
-            sondas_trace = sorted(t_serv["sonda_nombre"].dropna().unique())
-            sonda_trace = st.selectbox("Sonda", sondas_trace, key="trace_probe_tecnico")
+        # Resumen de integridad del corpus.
+        ping_validas = p_serv[pd.to_numeric(p_serv["sent"], errors="coerce") > 0].copy()
+        sent0 = int((pd.to_numeric(p_serv["sent"], errors="coerce").fillna(0) == 0).sum())
+        hop255 = int(
+            h_serv["hop_especial_255"].astype(str).str.lower().eq("true").sum()
+        ) if "hop_especial_255" in h_serv.columns else 0
+        trazas_ok = int(t_serv["respondio_destino"].astype(bool).sum()) if len(t_serv) else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Ping del servicio", f"{len(p_serv):,}")
+        c2.metric("Ping válidas", f"{len(ping_validas):,}")
+        c3.metric("Registros sent=0", f"{sent0:,}")
+        c4.metric("Traceroutes al destino", f"{trazas_ok:,} / {len(t_serv):,}")
+        st.caption(
+            f"Registros especiales hop=255 presentes en el detalle del servicio: {hop255:,}. "
+            "Estos registros no se contabilizan como 255 saltos."
+        )
+
+        st.markdown("### Recalcular indicadores Ping del servicio")
+        s_check = estadisticas_ping(p_serv)
+        check = pd.DataFrame(
+            [
+                ["Ejecuciones Ping válidas", int(s_check["n_validas"]), "sent > 0"],
+                ["Alcanzabilidad ICMP (%)", round(float(s_check["alcanzabilidad"]), 4), "ejecuciones válidas con ≥1 respuesta / válidas"],
+                ["Pérdida agregada (%)", round(float(s_check["perdida"]), 4), "(Σsent − Σrcvd) / Σsent × 100"],
+                ["RTT mediano (ms)", round(float(s_check["mediana"]), 4) if pd.notna(s_check["mediana"]) else np.nan, "mediana del RTT promedio por ejecución"],
+                ["RTT P95 (ms)", round(float(s_check["p95"]), 4) if pd.notna(s_check["p95"]) else np.nan, "P95 del RTT promedio por ejecución"],
+            ],
+            columns=["Indicador", "Valor recalculado", "Criterio"],
+        )
+        st.dataframe(check, use_container_width=True, hide_index=True)
+
+        st.markdown("### Vista procesada de Ping")
+        ping_cols = [
+            c for c in [
+                "timestamp", "sonda_id", "sonda_nombre", "asn_origen", "franja",
+                "sent", "rcvd", "packet_loss_pct", "estado_ping", "alcanzable_icmp",
+                "rtt_exec_ms",
+            ] if c in p_serv.columns
+        ]
+        probe_ping = st.selectbox(
+            "Sonda para revisar Ping",
+            ["Todas"] + [x for x in PROBE_ORDER if x in set(p_serv["sonda_nombre"].dropna())],
+            key="audit_ping_probe",
+        )
+        ping_view = p_serv if probe_ping == "Todas" else p_serv[p_serv["sonda_nombre"] == probe_ping]
+        st.dataframe(ping_view[ping_cols].sort_values("timestamp", ascending=False).head(250), use_container_width=True, hide_index=True)
+        st.caption("Se muestran como máximo 250 registros en pantalla; la descarga contiene el conjunto filtrado completo.")
+        st.download_button(
+            "Descargar Ping procesado del servicio",
+            ping_view[ping_cols].to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"ping_procesado_{servicio.replace(' ', '_').replace('/', '-')}.csv",
+            mime="text/csv",
+        )
+
+        st.markdown("### Inspección controlada de una traza")
+        if t_serv.empty:
+            st.info("No hay Traceroute para el servicio seleccionado.")
+        else:
+            trace_probes = [x for x in PROBE_ORDER if x in set(t_serv["sonda_nombre"].dropna())]
+            sonda_trace = st.selectbox("Sonda", trace_probes, key="audit_trace_probe")
             subset = t_serv[t_serv["sonda_nombre"] == sonda_trace].sort_values("timestamp", ascending=False)
-            trace_id = st.selectbox("Ejecución Traceroute", subset["trace_id"].astype(str).tolist(), key="trace_exec_tecnico")
-            hd = h_serv[h_serv["trace_id"].astype(str) == str(trace_id)].sort_values(["hop_num", "intento"])
-            st.dataframe(hd, use_container_width=True, hide_index=True)
+            trace_options = subset["trace_id"].astype(str).tolist()
+            stamp_map = subset.set_index(subset["trace_id"].astype(str))["timestamp"].to_dict()
+            trace_id = st.selectbox(
+                "Ejecución Traceroute",
+                trace_options,
+                format_func=lambda x: f"{stamp_map.get(x)} · {x}",
+                key="audit_trace_exec",
+            )
+            trace_row = subset[subset["trace_id"].astype(str) == str(trace_id)].head(1)
+            if not trace_row.empty:
+                r = trace_row.iloc[0]
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Destino alcanzado", "Sí" if bool(r.get("respondio_destino")) else "No")
+                c2.metric("Último TTL ordinario respondiente", str(r.get("ultimo_hop_respondiente", "N/D")))
+                c3.metric("Firma disponible", "Sí" if str(r.get("firma_ip", "")).strip() else "No")
 
-        st.download_button(
-            "Descargar Ping filtrado",
-            p_serv.to_csv(index=False).encode("utf-8-sig"),
-            file_name="ping_filtrado.csv",
-            mime="text/csv",
+            hd = h_serv[h_serv["trace_id"].astype(str) == str(trace_id)].sort_values(["hop_num", "intento"])
+            hop_cols = [
+                c for c in [
+                    "hop_num", "hop_especial_255", "intento", "ip_hop", "rtt_hop_ms",
+                    "timeout", "error", "es_destino", "asn_hop", "as_name", "pais", "ciudad",
+                ] if c in hd.columns
+            ]
+            st.dataframe(hd[hop_cols], use_container_width=True, hide_index=True)
+            st.caption(
+                "La atribución ASN/geográfica es auxiliar. Una ciudad o país asociado a una IP no se interpreta como prueba de ubicación física exacta."
+            )
+
+        st.markdown("### Firmas de ruta más frecuentes")
+        route_cols = [c for c in ["sonda_nombre", "firma_ip", "respondio_destino"] if c in t_serv.columns]
+        if "firma_ip" in t_serv.columns:
+            sig = (
+                t_serv[t_serv["firma_ip"].fillna("").str.len() > 0]
+                .groupby(["sonda_nombre", "firma_ip", "respondio_destino"], dropna=False)
+                .size().reset_index(name="Frecuencia")
+                .sort_values("Frecuencia", ascending=False)
+            )
+            st.dataframe(sig.head(50), use_container_width=True, hide_index=True)
+
+        st.markdown("### Descargas de verificación")
+        st.caption(
+            "Se ofrecen únicamente conjuntos procesados utilizados por la tesis. Los JSON originales de RIPE Atlas se conservan como fuente primaria, "
+            "pero no se exponen en esta interfaz para evitar mezclar datos crudos con los criterios de procesamiento documentados."
         )
-        st.download_button(
-            "Descargar Traceroute filtrado",
-            t_serv.to_csv(index=False).encode("utf-8-sig"),
-            file_name="traceroute_filtrado.csv",
-            mime="text/csv",
-        )
+        trace_cols = [
+            c for c in [
+                "timestamp", "trace_id", "sonda_id", "sonda_nombre", "asn_origen", "franja",
+                "respondio_destino", "ultimo_hop_respondiente", "firma_ip",
+            ] if c in t_serv.columns
+        ]
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                "Descargar Traceroute procesado",
+                t_serv[trace_cols].to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"traceroute_procesado_{servicio.replace(' ', '_').replace('/', '-')}.csv",
+                mime="text/csv",
+            )
+        with d2:
+            hop_download_cols = [
+                c for c in ["timestamp", "trace_id", "sonda_nombre", "hop_num", "hop_especial_255", "intento", "ip_hop", "rtt_hop_ms", "timeout", "error", "es_destino", "asn_hop", "as_name", "pais", "ciudad"]
+                if c in h_serv.columns
+            ]
+            st.download_button(
+                "Descargar detalle hop-by-hop procesado",
+                h_serv[hop_download_cols].to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"hops_procesados_{servicio.replace(' ', '_').replace('/', '-')}.csv",
+                mime="text/csv",
+            )
 
 st.markdown("---")
 st.caption(
