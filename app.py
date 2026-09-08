@@ -448,6 +448,243 @@ def sankey_asn_limpio(
     return fig
 
 
+
+def _service_short(servicio: str) -> str:
+    return {
+        "Biblioteca Digital / Vereda": "Vereda",
+        "Intranet ULA": "Intranet",
+        "Sistema de Grados": "Grados",
+        "Saber ULA": "Saber",
+    }.get(str(servicio), str(servicio))
+
+
+def construir_paths_globales(
+    df_traces: pd.DataFrame,
+    df_hops: pd.DataFrame,
+    servicios: list[str] | None = None,
+    sondas: list[str] | None = None,
+) -> pd.DataFrame:
+    """Construye las rutas ASN/IXP de todos los servicios sin recortar a top-N."""
+    tr = df_traces.copy()
+    hp = df_hops.copy()
+    if servicios:
+        tr = tr[tr["sitio_web"].isin(servicios)]
+        hp = hp[hp["sitio_web"].isin(servicios)]
+    if sondas:
+        tr = tr[tr["sonda_nombre"].isin(sondas)]
+        hp = hp[hp["sonda_nombre"].isin(sondas)]
+    if tr.empty:
+        return pd.DataFrame()
+
+    seqs = secuencias_asn_por_trace(hp)
+    rows = []
+    for _, row in tr.iterrows():
+        servicio = str(row["sitio_web"])
+        sonda = str(row["sonda_nombre"])
+        origin_asn = _normalizar_asn(row.get("asn_origen")) or str(row.get("asn_origen", "Origen"))
+        red_tokens = _compactar_path([origin_asn] + seqs.get(str(row["trace_id"]), []))
+        reached = bool(row["respondio_destino"])
+        terminal = f"Destino · {servicio}" if reached else f"Traza incompleta · {servicio}"
+        visual_tokens = _compactar_path([f"Origen · {sonda}"] + red_tokens + [terminal])
+        if len(visual_tokens) < 2:
+            continue
+        rows.append(
+            {
+                "trace_id": row["trace_id"],
+                "sonda_nombre": sonda,
+                "sitio_web": servicio,
+                "respondio_destino": reached,
+                "red_tokens": red_tokens,
+                "visual_tokens": visual_tokens,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _edge_table_with_breakdown(paths: pd.DataFrame) -> pd.DataFrame:
+    """Agrega transiciones y conserva un desglose por servicio para el hover."""
+    if paths.empty:
+        return pd.DataFrame()
+    events = []
+    for _, row in paths.iterrows():
+        servicio = str(row["sitio_web"])
+        estado = "Destino alcanzado" if bool(row["respondio_destino"]) else "Traza incompleta"
+        tokens = row["visual_tokens"]
+        for source, target in zip(tokens[:-1], tokens[1:]):
+            events.append((source, target, servicio, estado))
+    if not events:
+        return pd.DataFrame()
+    ev = pd.DataFrame(events, columns=["source", "target", "servicio", "estado"])
+    totals = ev.groupby(["source", "target"], as_index=False).size().rename(columns={"size": "trazas"})
+    breakdown = (
+        ev.groupby(["source", "target", "servicio"], as_index=False)
+        .size()
+        .rename(columns={"size": "n"})
+    )
+    detail_map = {}
+    for (source, target), grp in breakdown.groupby(["source", "target"], sort=False):
+        parts = [f"{_service_short(r.servicio)}: {int(r.n)}" for r in grp.itertuples(index=False)]
+        detail_map[(source, target)] = " · ".join(parts)
+    totals["desglose"] = [detail_map.get((r.source, r.target), "") for r in totals.itertuples(index=False)]
+    return totals.sort_values("trazas", ascending=False)
+
+
+def sankey_global_servicios(
+    df_traces: pd.DataFrame,
+    df_hops: pd.DataFrame,
+    servicios: list[str],
+    sondas: list[str],
+):
+    """Sankey global: todos los servicios y todas las familias observadas."""
+    paths = construir_paths_globales(df_traces, df_hops, servicios, sondas)
+    edges = _edge_table_with_breakdown(paths)
+    if edges.empty:
+        return None, paths, edges
+
+    name_map = mapa_nombres_asn(df_hops)
+    nodes_raw = list(dict.fromkeys(edges["source"].tolist() + edges["target"].tolist()))
+    labels = [name_map.get(n, n) for n in nodes_raw]
+    idx = {n: i for i, n in enumerate(nodes_raw)}
+
+    fig = go.Figure(
+        go.Sankey(
+            arrangement="snap",
+            node=dict(
+                pad=15,
+                thickness=17,
+                label=labels,
+                customdata=nodes_raw,
+                hovertemplate="%{label}<br>%{customdata}<extra></extra>",
+            ),
+            link=dict(
+                source=edges["source"].map(idx),
+                target=edges["target"].map(idx),
+                value=edges["trazas"],
+                customdata=edges["desglose"],
+                hovertemplate=(
+                    "%{source.label} → %{target.label}<br>"
+                    "%{value} traceroutes<br>%{customdata}<extra></extra>"
+                ),
+            ),
+        )
+    )
+    fig.update_layout(
+        title="Rutas ASN/IXP observadas hacia los cuatro servicios · campaña completa",
+        height=max(780, 27 * len(nodes_raw)),
+        margin=dict(l=15, r=15, t=80, b=20),
+        font=dict(size=11),
+    )
+    return fig, paths, edges
+
+
+def rutas_entrada_global_df(
+    df_traces: pd.DataFrame,
+    df_hops: pd.DataFrame,
+    servicios: list[str],
+    sondas: list[str],
+) -> tuple[pd.DataFrame, int, int]:
+    """Resume SOLO rutas completadas, para los cuatro servicios simultáneamente."""
+    paths = construir_paths_globales(df_traces, df_hops, servicios, sondas)
+    if paths.empty:
+        return pd.DataFrame(), 0, 0
+    incompletas = int((~paths["respondio_destino"].astype(bool)).sum())
+    reached = paths[paths["respondio_destino"].astype(bool)].copy()
+    rows = []
+    sin_atribucion = 0
+    for _, row in reached.iterrows():
+        seq = list(row["red_tokens"])
+        if len(seq) < 2:
+            sin_atribucion += 1
+            continue
+        rows.append(
+            {
+                "Sonda": row["sonda_nombre"],
+                "Servicio": row["sitio_web"],
+                "Penúltimo nodo atribuible": seq[-2],
+                "Último nodo atribuible": seq[-1],
+                "Destino alcanzado": True,
+            }
+        )
+    if not rows:
+        return pd.DataFrame(), incompletas, sin_atribucion
+    detail = pd.DataFrame(rows)
+    grouped = (
+        detail.groupby(
+            ["Sonda", "Servicio", "Penúltimo nodo atribuible", "Último nodo atribuible", "Destino alcanzado"],
+            dropna=False,
+        )
+        .size()
+        .reset_index(name="Traceroutes")
+        .sort_values("Traceroutes", ascending=False)
+    )
+    return grouped, incompletas, sin_atribucion
+
+
+def sankey_rutas_entrada_global(rutas: pd.DataFrame, df_hops: pd.DataFrame):
+    """Sankey global de rutas de entrada usando exclusivamente trazas completadas."""
+    if rutas.empty:
+        return None
+    name_map = mapa_nombres_asn(df_hops)
+    edge_rows = []
+    for _, r in rutas.iterrows():
+        sonda = f"Origen · {r['Sonda']}"
+        pen_raw = r["Penúltimo nodo atribuible"]
+        ult_raw = r["Último nodo atribuible"]
+        pen = name_map.get(pen_raw, pen_raw)
+        ult = name_map.get(ult_raw, ult_raw)
+        dest = f"Destino alcanzado · {r['Servicio']}"
+        val = int(r["Traceroutes"])
+        edge_rows.extend(
+            [
+                (sonda, f"Penúltimo · {pen}", val, r["Servicio"]),
+                (f"Penúltimo · {pen}", f"Último · {ult}", val, r["Servicio"]),
+                (f"Último · {ult}", dest, val, r["Servicio"]),
+            ]
+        )
+    ev = pd.DataFrame(edge_rows, columns=["source", "target", "value", "servicio"])
+    if ev.empty:
+        return None
+    edges = ev.groupby(["source", "target"], as_index=False)["value"].sum()
+    breakdown = ev.groupby(["source", "target", "servicio"], as_index=False)["value"].sum()
+    detail_map = {}
+    for (source, target), grp in breakdown.groupby(["source", "target"], sort=False):
+        detail_map[(source, target)] = " · ".join(
+            f"{_service_short(r.servicio)}: {int(r.value)}" for r in grp.itertuples(index=False)
+        )
+    edges["desglose"] = [detail_map.get((r.source, r.target), "") for r in edges.itertuples(index=False)]
+
+    nodes = list(dict.fromkeys(edges["source"].tolist() + edges["target"].tolist()))
+    idx = {n: i for i, n in enumerate(nodes)}
+    fig = go.Figure(
+        go.Sankey(
+            arrangement="snap",
+            node=dict(
+                label=nodes,
+                pad=16,
+                thickness=17,
+                customdata=nodes,
+                hovertemplate="%{label}<extra></extra>",
+            ),
+            link=dict(
+                source=edges["source"].map(idx),
+                target=edges["target"].map(idx),
+                value=edges["value"],
+                customdata=edges["desglose"],
+                hovertemplate=(
+                    "%{source.label} → %{target.label}<br>"
+                    "%{value} traceroutes completados<br>%{customdata}<extra></extra>"
+                ),
+            ),
+        )
+    )
+    fig.update_layout(
+        title="Rutas de entrada completadas hacia los cuatro servicios · ancho = frecuencia",
+        height=max(760, 28 * len(nodes)),
+        margin=dict(l=15, r=15, t=80, b=20),
+        font=dict(size=11),
+    )
+    return fig
+
 def _tokens_clasificacion(grp: pd.DataFrame) -> set[str]:
     tokens: set[str] = set()
     if grp.empty:
@@ -698,6 +935,66 @@ with tab_rutas:
         "que exista una alternativa doméstica disponible, ni permite reconstruir directamente las políticas BGP."
     )
 
+    st.markdown("### Vista global de los cuatro servicios")
+    st.caption(
+        "Esta vista integra simultáneamente los cuatro destinos institucionales y todas las familias de ruta "
+        "ASN/IXP observables de los puntos seleccionados; no está limitada a un número de rutas principales. "
+        "El filtro de servicio de la barra lateral no modifica esta visualización global."
+    )
+    sondas_globales_disp = [p for p in PROBE_ORDER if p in set(df_t["sonda_nombre"].dropna())]
+    sondas_globales = st.multiselect(
+        "Puntos de observación incluidos en las vistas globales",
+        sondas_globales_disp,
+        default=sondas_globales_disp,
+        key="sondas_globales_jurado",
+        help="Por defecto se representa la campaña completa desde las nueve sondas. Puede desmarcar una sonda para facilitar una explicación puntual.",
+    )
+    servicios_globales = [s for s in SERVICE_ORDER if s in set(df_t["sitio_web"].dropna())]
+
+    if sondas_globales:
+        fig_global, paths_global, edges_global = sankey_global_servicios(
+            df_t, df_h, servicios_globales, sondas_globales
+        )
+        if fig_global is not None:
+            st.plotly_chart(fig_global, use_container_width=True, config=sankey_config())
+            completas_global = int(paths_global["respondio_destino"].astype(bool).sum()) if not paths_global.empty else 0
+            st.caption(
+                f"Se integran {len(paths_global):,} traceroutes de los cuatro servicios: "
+                f"{completas_global:,} alcanzaron el destino y {len(paths_global) - completas_global:,} quedaron incompletos. "
+                "El ancho representa frecuencia de traceroutes, no RTT ni volumen real de tráfico. "
+                "Las trazas incompletas terminan en nodos separados por servicio; hop=255 no se interpreta como 255 saltos. "
+                "FL-IX y NAP Colombia se conservan como nodos IXP cuando son observables."
+            )
+        else:
+            st.info("No hay secuencias ASN/IXP suficientes para construir la vista global.")
+
+        st.markdown("### Rutas de entrada completadas — cuatro servicios")
+        st.caption(
+            "Esta segunda vista fue construida exclusivamente con traceroutes que sí alcanzaron el destino. "
+            "Resume el origen y los dos últimos nodos atribuibles (ASN o IXP) antes de cada servicio; "
+            "no representa necesariamente puntos físicos de entrada a la ULA."
+        )
+        rutas_globales, incompletas_global, sin_atrib_global = rutas_entrada_global_df(
+            df_t, df_h, servicios_globales, sondas_globales
+        )
+        fig_entrada = sankey_rutas_entrada_global(rutas_globales, df_h)
+        if fig_entrada is not None:
+            st.plotly_chart(fig_entrada, use_container_width=True, config=sankey_config())
+            incluidas = int(rutas_globales["Traceroutes"].sum()) if not rutas_globales.empty else 0
+            st.caption(
+                f"Traceroutes completados representados: {incluidas:,}. "
+                f"Trazas incompletas excluidas por definición: {incompletas_global:,}. "
+                f"Trazas completadas sin dos nodos atribuibles suficientes para esta síntesis: {sin_atrib_global:,}. "
+                "El ancho representa frecuencia de traceroutes completados."
+            )
+            with st.expander("Ver tabla resumida de rutas de entrada completadas"):
+                st.dataframe(rutas_globales, use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay rutas completadas con atribución suficiente para construir esta visualización.")
+    else:
+        st.info("Seleccione al menos un punto de observación para construir las vistas globales.")
+
+    st.markdown("---")
     st.markdown("### Síntesis global de evidencia exterior en sondas nacionales")
     clasif = clasificacion_enrutamiento_nacional(df_t, df_h)
     st.dataframe(clasif, use_container_width=True, hide_index=True)
@@ -706,52 +1003,43 @@ with tab_rutas:
         "La clasificación es conservadora y corresponde a los criterios metodológicos de la tesis."
     )
 
-    disponibles_nat = [p for p in NATIONAL_PROBES if p in set(t_serv["sonda_nombre"].dropna())]
-    if disponibles_nat:
-        default_probe = "Airtek (Maracaibo)" if "Airtek (Maracaibo)" in disponibles_nat else disponibles_nat[0]
-        idx_default = disponibles_nat.index(default_probe)
-        origen_ruta = st.selectbox(
-            "Origen para visualizar en detalle",
-            disponibles_nat,
-            index=idx_default,
-            key="origen_ruta_jurado",
+    with st.expander(f"Detalle opcional del servicio seleccionado: {servicio}"):
+        st.caption(
+            "Esta vista conserva el análisis por servicio para responder preguntas puntuales. "
+            "A diferencia de la vista global anterior, aquí puede seleccionarse un origen y limitar la presentación a las familias más frecuentes."
         )
-        t_route = t_serv[t_serv["sonda_nombre"] == origen_ruta].copy()
-        h_route = h_serv[h_serv["sonda_nombre"] == origen_ruta].copy()
-        n_reached = int(t_route["respondio_destino"].astype(bool).sum()) if len(t_route) else 0
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Traceroutes", f"{len(t_route):,}")
-        c2.metric("Destino alcanzado", f"{n_reached:,}")
-        c3.metric("Alcanzabilidad Traceroute", fmt_num(pct(n_reached, len(t_route)), 2, "%"))
+        disponibles_nat = [p for p in NATIONAL_PROBES if p in set(t_serv["sonda_nombre"].dropna())]
+        if disponibles_nat:
+            default_probe = "Airtek (Maracaibo)" if "Airtek (Maracaibo)" in disponibles_nat else disponibles_nat[0]
+            idx_default = disponibles_nat.index(default_probe)
+            origen_ruta = st.selectbox(
+                "Origen para visualizar en detalle",
+                disponibles_nat,
+                index=idx_default,
+                key="origen_ruta_jurado",
+            )
+            t_route = t_serv[t_serv["sonda_nombre"] == origen_ruta].copy()
+            n_reached = int(t_route["respondio_destino"].astype(bool).sum()) if len(t_route) else 0
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Traceroutes", f"{len(t_route):,}")
+            c2.metric("Destino alcanzado", f"{n_reached:,}")
+            c3.metric("Alcanzabilidad Traceroute", fmt_num(pct(n_reached, len(t_route)), 2, "%"))
 
-        st.markdown("### Sankey interactivo de rutas ASN/IXP")
-        c_sankey, c_help = st.columns([1, 2])
-        with c_sankey:
             top_paths = st.selectbox(
-                "Rutas principales a mostrar",
+                "Familias más frecuentes a mostrar en el detalle",
                 [5, 8, 12],
                 index=1,
                 key="top_paths_jurado",
-                help="Solo cambia cuántas familias de ruta frecuentes se muestran; no modifica los datos.",
             )
-        with c_help:
-            st.info(
-                "El Sankey es interactivo: puede pasar el cursor sobre nodos y enlaces para ver detalle "
-                "y arrastrar los nodos para reorganizar temporalmente la vista."
-            )
-
-        fig = sankey_asn_limpio(t_serv, h_serv, servicio, [origen_ruta], top_paths=top_paths)
-        if fig is not None:
-            st.plotly_chart(fig, use_container_width=True, config=sankey_config())
-            st.caption(
-                "El ancho representa frecuencia de traceroutes, no RTT ni volumen real de tráfico. "
-                "Las trazas incompletas terminan en un nodo separado; hop=255 no se interpreta como 255 saltos. "
-                "FL-IX y NAP Colombia se conservan como nodos IXP cuando son observables."
-            )
+            fig = sankey_asn_limpio(t_serv, h_serv, servicio, [origen_ruta], top_paths=top_paths)
+            if fig is not None:
+                st.plotly_chart(fig, use_container_width=True, config=sankey_config())
+                st.caption(
+                    "Vista de apoyo por servicio. El ancho representa frecuencia de traceroutes y las trazas incompletas "
+                    "no se dibujan como si hubieran alcanzado el destino."
+                )
         else:
-            st.info("No hay secuencias ASN/IXP suficientes para construir esta visualización.")
-    else:
-        st.info("No hay sondas nacionales disponibles para el servicio seleccionado.")
+            st.info("No hay sondas nacionales disponibles para el servicio seleccionado.")
 
 # -----------------------------------------------------------------------------
 # 4. OONI
